@@ -18,6 +18,7 @@ final class WindowPreviewController {
     private var generation = UUID()
     private var pointerOnButton = false
     private var pointerOnPanel = false
+    private var explicitOpen = false
 
     init(runtime: TaskbarDelegate) { self.runtime = runtime }
 
@@ -62,7 +63,7 @@ final class WindowPreviewController {
     func reconcile() {
         thumbnails.purge(live: Set(runtime.coordinator.snapshot.buttons.compactMap { $0.instance?.id }))
         guard let current else { return }
-        if runtime.displays.hidden || !runtime.valid(current) ||
+        if (runtime.displays.hidden && !explicitOpen) || !runtime.valid(current) ||
            (source != nil && (source?.window == nil || source?.isHiddenOrHasHiddenAncestor == true)) { close() }
     }
 
@@ -82,6 +83,7 @@ final class WindowPreviewController {
         self.oldTooltip = nil
         panel?.orderOut(nil); panel?.close()
         panel = nil; content = nil; current = nil; source = nil
+        explicitOpen = false
         pointerOnPanel = false; pointerOnButton = false
     }
 
@@ -95,7 +97,8 @@ final class WindowPreviewController {
     }
 
     private func open(_ capture: ButtonCapture, source button: NSView?, explicit: Bool) async {
-        guard let id = capture.instance, runtime.valid(capture), !runtime.displays.hidden else { return }
+        guard let id = capture.instance, runtime.valid(capture),
+              (explicit || !runtime.displays.hidden) else { return }
         let token = UUID()
         generation = token
         let result = await runtime.accessibility.windows(for: id)
@@ -144,6 +147,7 @@ final class WindowPreviewController {
             button.toolTip = nil
         }
         current = capture
+        explicitOpen = explicit
         panel = popup; content = view
         popup.orderFront(nil)
         if explicit {
