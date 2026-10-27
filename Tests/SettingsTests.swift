@@ -11,7 +11,7 @@ import Foundation
     var value = WMacSettings(); value.theme = .dark; value.height = 40; value.opacity = 0.35; value.middleClick = false
     let a = AppDefinition(url: URL(fileURLWithPath: "/Applications/A.app"), bundleID: "a")
     let b = AppDefinition(url: URL(fileURLWithPath: "/Applications/B.app"), bundleID: "a")
-    value.exclusions = [a]; value.dockGuidanceSeen = true
+    value.exclusions = [a]; value.dockGuidanceSeen = true; value.hideSystemDock = true
     try await store.save(value)
     check(try await SettingsStore(url: url).load() == value, "settings and exact exclusions survive restart")
     let bytes = try Data(contentsOf: url)
@@ -24,7 +24,11 @@ import Foundation
     try Data("{\"version\":1,\"allDisplays\":false,\"height\":64,\"middleClick\":false}".utf8).write(to: url)
     let migrated = try await store.load()
     check(!migrated.allDisplays && migrated.height == 64 && !migrated.middleClick && migrated.opacity == 0.85, "version 1 migrates supplied fields with current defaults")
-    check(try JSONDecoder().decode(SettingsStore.Document.self, from: Data(contentsOf: url)).version == 2, "migration commits current schema")
+    check(try JSONDecoder().decode(SettingsStore.Document.self, from: Data(contentsOf: url)).version == 3, "migration commits current schema")
+    try Data("{\"version\":2,\"settings\":{\"allDisplays\":true,\"height\":52,\"opacity\":0.85,\"theme\":\"system\",\"middleClick\":true,\"exclusions\":[],\"dockGuidanceSeen\":true}}".utf8).write(to: url)
+    let v2 = try await store.load()
+    check(!v2.hideSystemDock, "v2 migrates with Dock hiding opt-in disabled")
+    check(try JSONDecoder().decode(SettingsStore.Document.self, from: Data(contentsOf: url)).version == 3, "v2 migration commits schema v3")
     for badBytes in [Data("broken".utf8), Data("{\"version\":999}".utf8)] {
         try badBytes.write(to: url)
         do { _ = try await store.load(); check(false, "bad settings rejected") } catch { check(try Data(contentsOf: url) == badBytes, "invalid/unsupported settings preserved for explicit recovery") }
