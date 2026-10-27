@@ -15,7 +15,7 @@ enum WindowResult: Sendable {
 }
 enum WindowAction: Sendable { case restore, minimize }
 struct WindowActionResult: Sendable {
-    enum Outcome: Sendable { case restored, minimized, activatedOnly, unavailable }
+    enum Outcome: Sendable { case restored, minimized, noManageableWindows, activatedOnly, unavailable }
     let outcome: Outcome
     let message: String
     let activationAccepted: Bool
@@ -243,8 +243,12 @@ final class AccessibilityService: @unchecked Sendable {
                     selectedRecord = state.records.first { $0.snapshot.id == preferred }
                         ?? state.records.first { !$0.snapshot.isMinimized } ?? state.records.first
                 }
-                guard let record = selectedRecord, self.boundary.live(id) else {
-                    continuation.resume(returning: Prepared(outcome: .activatedOnly, message: "Window disappeared or no manageable window exists; attempted process activation.")); return
+                guard self.boundary.live(id) else {
+                    continuation.resume(returning: Prepared(outcome: .unavailable, message: "Process lifetime no longer matches.")); return
+                }
+                guard let record = selectedRecord else {
+                    let outcome: WindowActionResult.Outcome = selected == nil && state.records.isEmpty ? .noManageableWindows : .activatedOnly
+                    continuation.resume(returning: Prepared(outcome: outcome, message: "No manageable window exists; attempted process activation.")); return
                 }
                 let minimize = selected == nil && toggle && active && state.minimizedByToggle == nil
                     && record.snapshot.isFocused && !record.snapshot.isMinimized

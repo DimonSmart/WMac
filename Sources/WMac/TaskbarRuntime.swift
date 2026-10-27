@@ -24,6 +24,7 @@ func tr(_ en: String, _ ru: String) -> String {
     private var tokens: [NSObjectProtocol] = []
     private var clock: Timer?
     private var pending: [AppDefinition: Int] = [:]
+    private var reopening = Set<AppDefinition>()
     private var message = ""
     private var detail = ""
     private var permissionExplained = false
@@ -124,9 +125,63 @@ func tr(_ en: String, _ ru: String) -> String {
         Task {
             guard valid(capture) else { return }
             let result = await accessibility.switchTo(id, minimizeIfActive: true, isActive: coordinator.snapshot.activeInstance == id && NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid)
-            if result.outcome == .activatedOnly || result.outcome == .unavailable {
+            if result.outcome == .noManageableWindows {
+                await requestReopen(capture, instance: id)
+            } else if result.outcome == .activatedOnly || result.outcome == .unavailable {
                 notify(tr("Window control limited — process switching remains available", "Управление окнами ограничено — переключение процесса доступно"), result.message)
             }
+        }
+    }
+    private func requestReopen(_ capture: ButtonCapture, instance: InstanceID) async {
+        guard let definition = capture.application else {
+            notify(tr("Application path unavailable", "Путь приложения недоступен"))
+            return
+        }
+        let matching = monitor.instances(of: definition)
+        guard valid(capture) else { return }
+        guard matching.count == 1, matching.first?.id == instance else {
+            notify(tr("This instance has no open windows", "У этого экземпляра нет открытых окон"),
+                   tr("Several instances are running, so the system could reopen a different PID. WMac kept the exact process active.", "Запущено несколько экземпляров, поэтому система могла бы открыть другой PID. WMac оставил активным выбранный процесс."))
+            return
+        }
+        guard reopening.insert(definition).inserted else { return }
+        pending[definition, default: 0] += 1
+        render()
+        defer {
+            pending[definition, default: 1] -= 1
+            reopening.remove(definition)
+            render()
+        }
+
+        switch await launcher.open(definition) {
+        case .success(let opened):
+            monitor.refresh()
+            let deadline = Date().addingTimeInterval(3)
+            var windowStateUnavailable = false
+            while Date() < deadline {
+                guard monitor.running(opened.id) != nil else { break }
+                switch await accessibility.windows(for: opened.id) {
+                case .windows(let windows):
+                    windowStateUnavailable = false
+                    if !windows.isEmpty { return }
+                case .unavailable:
+                    windowStateUnavailable = true
+                }
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+            if monitor.running(opened.id) == nil {
+                notify(tr("Application closed before reopening a window", "Приложение завершилось до повторного открытия окна"))
+            } else if windowStateUnavailable {
+                notify(tr("Reopen request sent", "Запрос на повторное открытие отправлен"),
+                       tr("WMac could not verify whether the application opened a window.", "WMac не смог проверить, открыло ли приложение окно."))
+            } else {
+                notify(tr("Application is running without an open window", "Приложение работает без открытых окон"),
+                       tr("The application did not create a window after the reopen request.", "Приложение не создало окно после запроса на повторное открытие."))
+            }
+        case .error(let reason):
+            notify(tr("Could not reopen application", "Не удалось повторно открыть приложение"), reason)
+        case .unconfirmed(let reason):
+            notify(tr("Reopen request was not confirmed", "Не удалось подтвердить повторное открытие"), reason)
         }
     }
     private func launch(_ capture: ButtonCapture, independent: Bool) {
