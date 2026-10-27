@@ -25,6 +25,9 @@ xcodebuild -project WMac.xcodeproj -target WMac -configuration Release \
 mkdir "$output/stage"
 app="$output/stage/WMac.app"
 ditto "$output/products/Release/WMac.app" "$app"
+helper="$app/Contents/Helpers/WMacDockWatchdog"
+[[ -x "$helper" ]] || fail 'Dock watchdog helper not embedded'
+codesign --force --sign - --options runtime --timestamp=none "$helper"
 codesign --force --sign - --options runtime --timestamp=none "$app"
 "$root/scripts/verify-release-app.sh" "$app" "$version" "$build" >"$output/app-verification.log" 2>&1 || fail "App verification failed; see $output/app-verification.log"
 ln -s /Applications "$output/stage/Applications"
