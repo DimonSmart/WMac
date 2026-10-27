@@ -10,6 +10,7 @@ plist="$app/Contents/Info.plist"
 value() { /usr/libexec/PlistBuddy -c "Print :$1" "$plist"; }
 [[ "$(value CFBundleIdentifier)" == app.wmac.WMac ]] || fail 'Unexpected bundle identity'
 [[ "$(value CFBundleDisplayName)" == 'WMac!' ]] || fail 'Unexpected display name'
+[[ "$(value CFBundleIconFile)" == 'AppIcon' && -s "$app/Contents/Resources/AppIcon.icns" ]] || fail 'App icon is missing'
 [[ "$(value LSMinimumSystemVersion)" == 14.0 ]] || fail 'Unexpected minimum OS'
 [[ "$(value CFBundleExecutable)" == WMac && "$(value CFBundlePackageType)" == APPL ]] || fail 'Unexpected application type/executable'
 [[ "$(value CFBundleShortVersionString)" == "$version" && "$(value CFBundleVersion)" == "$build" ]] || fail 'Unexpected version/build'

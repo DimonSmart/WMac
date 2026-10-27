@@ -17,7 +17,9 @@ for configuration in Debug Release; do
   plist=".build/products/$configuration/WMac.app/Contents/Info.plist"
   [[ "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")" == '14.0' ]]
   [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" == 'app.wmac.WMac' ]]
-  echo "PASS $configuration minimum OS=14.0 bundle=app.wmac.WMac"
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$plist")" == 'AppIcon' ]]
+  [[ -s ".build/products/$configuration/WMac.app/Contents/Resources/AppIcon.icns" ]]
+  echo "PASS $configuration minimum OS=14.0 bundle=app.wmac.WMac, AppIcon.icns"
 
   app=".build/products/$configuration/WMac.app"
   codesign --verify --deep --strict "$app"

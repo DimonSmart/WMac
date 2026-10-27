@@ -19,6 +19,7 @@ func tr(_ en: String, _ ru: String) -> String {
     let dockVisibility = SystemDockVisibilityService()
     private var dockAttempted = false
     lazy var settingsWindow = SettingsWindowController(runtime: self)
+    private lazy var aboutWindow = AboutWindowController()
     var preferences: PanelPreferences { PanelPreferences(middleClickNewInstance: settings.value.middleClick) }
     private var status: NSStatusItem!
     private var tokens: [NSObjectProtocol] = []
@@ -292,7 +293,7 @@ func tr(_ en: String, _ ru: String) -> String {
     }
     @objc func showSettings() { settingsWindow.show() }
     @objc func quit() { NSApp.terminate(nil) }
-    @objc func about() { showInfo("WMac!", tr("Native process taskbar. Local persistent settings. Ad-hoc signed DMG; macOS may require first-launch approval.", "Нативная панель процессов. Локальные настройки сохраняются. DMG с ad-hoc подписью; macOS может запросить подтверждение первого запуска.")) }
+    @objc func about() { aboutWindow.show() }
     @objc func instructions() { showInfo(tr("Instructions", "Инструкция"), tr("Click an instance to switch. Shift-click or middle-click requests a new independent process. Right-click for windows and process actions. Use Tab and Space for buttons, Control-click or Shift-F10 for menus.\n\nWMac coexists with the system Dock. You may enable Dock auto-hide or move it to a side in System Settings → Desktop & Dock. WMac can temporarily hide Dock with explicit consent in General settings; it restores the original preferences when the mode is disabled or WMac quits. It never reserves screen space. Hide panels from the menu bar if they interfere. Fullscreen and Spaces behavior needs verification on your display setup.", "Нажмите на экземпляр для переключения. Shift-клик или средний клик запрашивает новый процесс. Правый клик открывает окна и действия. Tab и пробел управляют кнопками, Control-клик или Shift-F10 — меню.\n\nСистемный Dock остаётся доступен. Автоскрытие или расположение сбоку можно включить в Системных настройках → Рабочий стол и Dock. WMac может временно скрывать Dock по вашему выбору в разделе «Общие», восстанавливая прежние параметры при выключении режима или выходе. Экранное пространство не резервируется. При необходимости скройте панели из строки меню. Полноэкранный режим и Spaces требуют проверки на вашем оборудовании.")) }
     @objc func permissionStatus() { showInfo(tr("Accessibility", "Универсальный доступ"), tr(permissions.status.explanation, permissions.trusted ? "Доступ включён. Управление отдельными окнами зависит от приложения." : "Для выбора, восстановления и сворачивания окон нужен Универсальный доступ. Переключение процессов, запуск и завершение доступны без него.")) }
     @objc func requestPermission() { permissionExplained = true; permissionStatus(); permissions.requestAccessFromUserAction() }
