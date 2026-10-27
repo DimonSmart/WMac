@@ -22,6 +22,8 @@
     <string>$(MARKETING_VERSION)</string>
     <key>CFBundleVersion</key>
     <string>$(CURRENT_PROJECT_VERSION)</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>WMac shows window thumbnails on your taskbar when you explicitly allow screen capture.</string>
     <key>LSMinimumSystemVersion</key>
     <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
     <key>LSMultipleInstancesProhibited</key>
