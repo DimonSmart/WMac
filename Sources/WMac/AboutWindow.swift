@@ -28,7 +28,10 @@ import AppKit
 
         let artwork = NSImageView()
         artwork.imageScaling = .scaleProportionallyUpOrDown
-        artwork.image = NSApp.applicationIconImage
+        // Load our bundled artwork directly: applicationIconImage can be unset or cached.
+        let icon = Bundle.main.url(forResource:"AppIcon",withExtension:"icns")
+            .flatMap { NSImage(contentsOf:$0) }
+        artwork.image = icon ?? NSApp.applicationIconImage
         artwork.setAccessibilityLabel(tr("An apple caught in a windowpane","Яблоко застряло в оконном стекле"))
         artwork.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
