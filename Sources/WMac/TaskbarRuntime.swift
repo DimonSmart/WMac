@@ -475,7 +475,13 @@ private actor PanelIcons {
     }
     func render(_ snapshot: TaskbarSnapshot) { for panel in panels.values { panel.bar.render(snapshot) } }
     func anchor(for capture: ButtonCapture) -> NSView? {
-        panels.values.compactMap { $0.bar.anchor(for: capture) }.first(where: { $0.window?.isVisible == true })
+        let choices = panels.values.compactMap { $0.bar.anchor(for: capture) }.filter { view in
+            guard view.window?.isVisible == true, !view.isHiddenOrHasHiddenAncestor else { return false }
+            // An overflowed button is still in the hierarchy but is not a usable popup anchor.
+            return view.visibleRect.intersects(view.bounds)
+        }
+        let pointer = NSEvent.mouseLocation
+        return choices.first(where: { $0.window?.frame.contains(pointer) == true }) ?? choices.first
     }
     func close() { for panel in panels.values { panel.close() }; panels.removeAll() }
 }
