@@ -113,7 +113,9 @@ final class WindowPreviewController {
             information = tr("Accessibility is required to enumerate windows.", "Для списка окон нужен Универсальный доступ.")
         }
 
-        let name = runtime.coordinator.snapshot.buttons.first(where: { $0.id == capture.button })?.name ?? tr("Application", "Приложение")
+        let target = runtime.coordinator.snapshot.buttons.first(where: { $0.id == capture.button })
+        let name = (target?.name ?? tr("Application", "Приложение")) +
+            (target?.ordinal.map { tr(" — instance \($0)", " — экземпляр \($0)") } ?? "")
         let view = WindowPreviewView(name: name, windows: windows, information: information)
         view.onSelect = { [weak self] window in self?.select(window, capture: capture) }
         view.onRefresh = { [weak self] in self?.openExplicit(capture) }
@@ -124,6 +126,7 @@ final class WindowPreviewController {
             if !self.runtime.permissions.trusted { self.runtime.requestPermission() }
             else { self.runtime.requestScreenRecording() }
         }
+        if !CGPreflightScreenCaptureAccess() { thumbnails.clear() }
         if information != nil || !runtime.settings.value.showWindowThumbnails || !CGPreflightScreenCaptureAccess() {
             view.setPermissionHint(allowImages: runtime.settings.value.showWindowThumbnails, axTrusted: runtime.permissions.trusted)
         }
@@ -417,6 +420,16 @@ private final class WindowThumbnailService {
     private struct Key: Hashable { let instance: InstanceID; let window: UUID; let graphics: CGWindowID }
     private struct Entry { let image: NSImage; let date: Date; let bytes: Int }
     private var cache: [Key: Entry] = [:]
+    private var activeCaptures = 0
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private func acquire() async {
+        if activeCaptures < 2 { activeCaptures += 1; return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+    private func release() {
+        if waiting.isEmpty { activeCaptures -= 1 }
+        else { waiting.removeFirst().resume() }
+    }
     func clear() { cache.removeAll() }
 
     func load(_ windows: [WindowReference], instance: InstanceID,
@@ -444,8 +457,11 @@ private final class WindowThumbnailService {
             let scale = min(440 / max(source.frame.width, 1), 280 / max(source.frame.height, 1), 1)
             config.width = max(1, Int(source.frame.width * scale))
             config.height = max(1, Int(source.frame.height * scale))
+            await acquire()
+            guard stillCurrent(), !Task.isCancelled else { release(); return }
             do {
                 let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: source), configuration: config)
+                release()
                 guard stillCurrent(), !Task.isCancelled else { return }
                 let picture = NSImage(cgImage: image, size: NSSize(width: CGFloat(image.width), height: CGFloat(image.height)))
                 let bytes = image.width * image.height * 4
@@ -453,6 +469,7 @@ private final class WindowThumbnailService {
                 trim()
                 onImage(window.id, picture, false)
             } catch {
+                release()
                 // A protected, minimized or non-capturable window retains its AX card.
                 continue
             }
