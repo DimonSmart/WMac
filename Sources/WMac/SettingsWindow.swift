@@ -113,6 +113,42 @@ import ServiceManagement
         behavior.addArrangedSubview(text(tr("Shift-click always requests a new independent instance.", "Shift + клик всегда запрашивает новый независимый экземпляр.")))
         toggle(behavior, tr("Middle-click requests a new instance", "Средний клик запрашивает новый экземпляр"), value.middleClick) { [weak self] on in self?.runtime.settings.edit { $0.middleClick = on } }
         behavior.addArrangedSubview(text(tr("Click an instance to switch to it; click the active instance again to minimize its window. Window control requires Accessibility. Without it, the exact process is activated.", "Нажмите на экземпляр, чтобы переключиться на него; повторное нажатие на активный экземпляр свернёт его окно. Для управления окнами нужен Универсальный доступ. Без него активируется точный процесс.")))
+        let previews = section(tr("Window Previews", "Предпросмотр окон"))
+        previews.addArrangedSubview(text(tr("Show window cards after hovering over a running instance for 450 ms.", "Показывать карточки окон спустя 450 мс наведения на запущенный экземпляр.")))
+        let hover = NSPopUpButton()
+        hover.identifier = NSUserInterfaceItemIdentifier("hoverPreviews")
+        hover.addItems(withTitles: [tr("Automatic (2+ windows)", "Автоматически (2+ окна)"), tr("Always (1+ windows)", "Всегда (1+ окно)"), tr("Disabled", "Отключено")])
+        hover.selectItem(at: HoverPreviewMode.allCases.firstIndex(of: value.hoverPreviews) ?? 0)
+        hover.target = self; hover.action = #selector(hoverChanged(_:))
+        hover.isEnabled = runtime.settings.ready
+        hover.setAccessibilityLabel(tr("Hover previews", "Предпросмотр при наведении"))
+        previews.addArrangedSubview(hover)
+        toggle(previews, tr("Show real window thumbnails", "Показывать настоящие миниатюры окон"), value.showWindowThumbnails) { [weak self] on in
+            self?.runtime.settings.edit { $0.showWindowThumbnails = on }
+        }
+        previews.addArrangedSubview(text(tr("Window thumbnails require optional Screen Recording permission. Window selection remains available without it.", "Для миниатюр необходимо дополнительное разрешение на запись экрана. Выбор окон работает и без него.")))
+        previews.addArrangedSubview(text(CGPreflightScreenCaptureAccess() ? tr("Screen Recording: enabled", "Запись экрана: разрешена") : tr("Screen Recording: not granted", "Запись экрана: нет разрешения")))
+        button(previews, tr("Allow window thumbnails…", "Разрешить миниатюры окон…")) { [weak self] in
+            self?.runtime.requestScreenRecording()
+        }
+        previews.addArrangedSubview(text(tr("Per-application overrides (all its instances):", "Переопределения для приложений (все экземпляры):")))
+        let definitions = Set(runtime.coordinator.pins.map { $0.pin.application } + runtime.coordinator.snapshot.buttons.compactMap(\.application) + value.appPreviewPreferences.map(\.application))
+        for app in definitions.sorted(by: { $0.url.path < $1.url.path }) {
+            let title = text(app.url.deletingPathExtension().lastPathComponent)
+            previews.addArrangedSubview(title)
+            let choice = NSPopUpButton()
+            choice.addItems(withTitles: [tr("Use global setting", "Общая настройка"), tr("Always", "Всегда"), tr("Disabled", "Отключено")])
+            for item in choice.itemArray { item.representedObject = app }
+            switch value.appPreviewPreferences.first(where: { $0.application == app })?.mode {
+            case .always: choice.selectItem(at: 1)
+            case .disabled: choice.selectItem(at: 2)
+            case nil: choice.selectItem(at: 0)
+            }
+            choice.target = self; choice.action = #selector(appHoverChanged(_:))
+            choice.isEnabled = runtime.settings.ready
+            choice.setAccessibilityLabel(tr("Hover preview for ", "Предпросмотр для ") + app.url.lastPathComponent)
+            previews.addArrangedSubview(choice)
+        }
         let apps = section(tr("Applications", "Приложения"))
         apps.addArrangedSubview(text(tr("Pinned applications — use each menu to reorder, unpin or relink:", "Закрепления — меню позволяет изменить порядок, открепить или восстановить путь:")))
         for pin in runtime.coordinator.pins {
@@ -132,7 +168,7 @@ import ServiceManagement
         button(apps, tr("Reset settings…", "Сбросить настройки…")) { [weak self] in self?.confirmReset(recovery: false) }
         let permissions = section(tr("Permissions", "Разрешения"))
         permissions.addArrangedSubview(text(runtime.permissions.trusted ? tr("Accessibility: enabled", "Универсальный доступ: включён") : tr("Accessibility: unavailable", "Универсальный доступ: недоступен")))
-        permissions.addArrangedSubview(text(tr("Accessibility enables window listing, selection, restore and minimization. Process discovery, pins, launching, switching by PID and termination work without it. Screen Recording is never requested.", "Универсальный доступ позволяет выбирать, восстанавливать и сворачивать окна. Процессы, закрепления, запуск, переключение по PID и завершение работают без него. Запись экрана не запрашивается.")))
+        permissions.addArrangedSubview(text(tr("Accessibility enables window listing, selection, restore and minimization. Process discovery, pins, launching, switching by PID and termination work without it. Screen Recording is requested only when the user explicitly enables thumbnails.", "Универсальный доступ позволяет выбирать, восстанавливать и сворачивать окна. Процессы, закрепления, запуск, переключение по PID и завершение работают без него. Запись экрана запрашивается только после явного разрешения пользователя.")))
         button(permissions, tr("Request Accessibility…", "Запросить Универсальный доступ…")) { [weak self] in self?.runtime.requestPermission(); self?.refresh() }
         button(permissions, tr("Open Accessibility settings…", "Открыть настройки Универсального доступа…")) { [weak self] in self?.runtime.permissionSettings() }
         button(permissions, tr("Refresh status", "Обновить статус")) { [weak self] in self?.refresh() }
@@ -144,6 +180,17 @@ import ServiceManagement
             }
             if let root = tabs.selectedTabViewItem?.view, let next = matching(root) { window?.makeFirstResponder(next) }
         }
+    }
+    @objc private func hoverChanged(_ sender: NSPopUpButton) {
+        guard HoverPreviewMode.allCases.indices.contains(sender.indexOfSelectedItem) else { return }
+        let selected = HoverPreviewMode.allCases[sender.indexOfSelectedItem]
+        runtime.settings.edit { $0.hoverPreviews = selected }
+    }
+    @objc private func appHoverChanged(_ sender: NSPopUpButton) {
+        guard let app = sender.selectedItem?.representedObject as? AppDefinition else { return }
+        let selection: AppHoverPreviewMode? = sender.indexOfSelectedItem == 1 ? .always :
+            (sender.indexOfSelectedItem == 2 ? .disabled : nil)
+        runtime.settings.edit { $0.setHoverOverride(selection, for: app) }
     }
     @objc private func heightChanged(_ sender: NSSlider) { let v = sender.doubleValue; runtime.settings.edit { $0.height = v } }
     @objc private func themeChanged(_ sender: NSPopUpButton) { let v = WMacSettings.Theme.allCases[sender.indexOfSelectedItem]; runtime.settings.edit { $0.theme = v } }
