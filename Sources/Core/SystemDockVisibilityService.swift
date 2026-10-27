@@ -263,7 +263,7 @@ enum SystemDockRecovery {
             let reason = error.localizedDescription
             do { _ = try SystemDockRecovery.restore(stateURL, backend: backend) }
             catch { status = .failed(reason + "; recovery failed: " + error.localizedDescription); changed?(); return }
-            watchdog?.terminate()
+            if let watchdog, watchdog.isRunning { watchdog.terminate() }
             watchdog = nil
             sessionID = nil
             releaseLock()
@@ -276,7 +276,7 @@ enum SystemDockRecovery {
             let hadState = needsRecovery
             try obtainLock()
             let conflicts = try SystemDockRecovery.restore(stateURL, backend: backend)
-            watchdog?.terminate()
+            if let watchdog, watchdog.isRunning { watchdog.terminate() }
             watchdog = nil
             sessionID = nil
             releaseLock()
@@ -300,7 +300,7 @@ enum SystemDockRecovery {
         var buffer = [UInt8](repeating: 0, count: 32)
         let count = result > 0 ? read(descriptor.fd, &buffer, buffer.count) : -1
         guard count > 0 && String(decoding: buffer.prefix(count), as: UTF8.self).contains("READY") else {
-            process.terminate()
+            if process.isRunning { process.terminate() }
             throw SystemDockFailure.watchdog
         }
         watchdog = process
