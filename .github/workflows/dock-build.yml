@@ -26,3 +26,5 @@ jobs:
           mkdir -p .build/tests
           xcrun swiftc -swift-version 6 -o .build/tests/ModelTests Sources/Core/*.swift Tests/*.swift
           .build/tests/ModelTests
+      - name: Verify signed universal release DMG and embedded helper
+        run: ./scripts/release.sh 0.1.0 1
