@@ -99,7 +99,7 @@ struct AccessibilityBoundary: Sendable {
             var frame: CGRect?
             if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue) == .success,
                AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
-               let originAX = positionValue as! AXValue?, let sizeAX = sizeValue as! AXValue? {
+               let originAX = positionValue as? AXValue, let sizeAX = sizeValue as? AXValue {
                 var origin = CGPoint.zero
                 var size = CGSize.zero
                 if AXValueGetValue(originAX, .cgPoint, &origin), AXValueGetValue(sizeAX, .cgSize, &size),
