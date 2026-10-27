@@ -80,6 +80,24 @@ import ServiceManagement
         button(general, tr("Enable launch at login", "Включить запуск при входе")) { [weak self] in self?.login.enable(); self?.refresh() }
         button(general, tr("Disable launch at login", "Отключить запуск при входе")) { [weak self] in Task { await self?.login.disable(); self?.refresh() } }
         button(general, tr("Login Items settings…", "Настройки объектов входа…")) { [weak self] in self?.login.openSettings() }
+        toggle(general, tr("Hide system Dock while WMac runs", "Скрывать системный Dock, пока работает WMac"), value.hideSystemDock) { [weak self] on in
+            guard let self else { return }
+            if on { self.confirmDockHiding() }
+            else { self.runtime.settings.edit { $0.hideSystemDock = false } }
+        }
+        switch runtime.dockVisibility.status {
+        case .active:
+            general.addArrangedSubview(text(tr("System Dock hidden", "Системный Dock скрыт")))
+        case .failed(let reason):
+            general.addArrangedSubview(text(tr("Could not hide Dock: ", "Не удалось скрыть Dock: ") + reason))
+        case .inactive:
+            if value.hideSystemDock && runtime.displays.hidden {
+                general.addArrangedSubview(text(tr("Paused: WMac taskbars are hidden", "Приостановлено: панели WMac скрыты")))
+            }
+        }
+        if runtime.dockVisibility.needsRecovery {
+            button(general, tr("Restore system Dock", "Восстановить системный Dock")) { [weak self] in self?.runtime.restoreSystemDock() }
+        }
         button(general, tr("Dock settings…", "Настройки Dock…")) { [weak self] in self?.runtime.dockSettings() }
         button(general, tr("Show Dock guidance", "Показать инструкцию Dock")) { [weak self] in self?.runtime.instructions() }
         button(general, tr("Quit WMac!", "Выйти из WMac!")) { [weak self] in self?.runtime.quit() }
@@ -141,6 +159,22 @@ import ServiceManagement
                 let definition = pin.pin.application
                 self.runtime.settings.edit { if !$0.exclusions.contains(definition) { $0.exclusions.append(definition) } }
             }
+        }
+    }
+    private func confirmDockHiding() {
+        let alert = NSAlert()
+        alert.messageText = tr("Hide system Dock?", "Скрыть системный Dock?")
+        alert.informativeText = tr(
+            "WMac will change the system Dock's auto-hide preferences. Their original values will be saved and restored when this option is disabled or WMac quits. The Dock will restart to apply the changes.",
+            "WMac изменит настройки автоматического скрытия системного Dock. Исходные значения будут сохранены и восстановлены при отключении этой функции или завершении WMac. Для применения настроек системный Dock будет перезапущен.")
+        alert.addButton(withTitle: tr("Enable", "Включить"))
+        alert.addButton(withTitle: tr("Cancel", "Отмена"))
+        guard let window else { refresh(); return }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self else { return }
+            if response == .alertFirstButtonReturn {
+                self.runtime.settings.edit { $0.hideSystemDock = true }
+            } else { self.refresh() }
         }
     }
     private func confirmReset(recovery: Bool) {
