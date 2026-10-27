@@ -15,6 +15,7 @@ func tr(_ en: String, _ ru: String) -> String {
     let permissions = AccessibilityPermissionService()
     lazy var launcher = LaunchService(monitor: monitor)
     lazy var displays = DisplayCoordinator(runtime: self)
+    lazy var previews = WindowPreviewController(runtime: self)
     let settings = SettingsController()
     let dockVisibility = SystemDockVisibilityService()
     private var dockAttempted = false
@@ -35,6 +36,7 @@ func tr(_ en: String, _ ru: String) -> String {
     private var loading = Set<AppDefinition>()
     private var windowTitles: [InstanceID: String] = [:]
     private var titleRequest: (InstanceID, Date)?
+    private var menuWindowCache: [InstanceID: (date: Date, result: WindowResult)] = [:]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -72,6 +74,7 @@ func tr(_ en: String, _ ru: String) -> String {
         settings.changed = { [weak self] in
             guard let self else { return }
             coordinator.setExclusions(Set(settings.value.exclusions)); displays.reconcile()
+            previews.settingsChanged()
             synchronizeDockVisibility()
             settingsWindow.refresh()
             if let error = settings.failure { notify(tr("Settings recovery needed", "Нужно восстановить настройки"), error) }
@@ -87,6 +90,7 @@ func tr(_ en: String, _ ru: String) -> String {
     func render() {
         let snapshot = coordinator.snapshot
         let live = Set(snapshot.buttons.compactMap { $0.instance?.id })
+        menuWindowCache = menuWindowCache.filter { live.contains($0.key) }
         windowTitles = windowTitles.filter { live.contains($0.key) }
         if accessibility.trusted, let active = snapshot.activeInstance,
            titleRequest?.0 != active || Date().timeIntervalSince(titleRequest?.1 ?? .distantPast) > 10 {
@@ -110,6 +114,7 @@ func tr(_ en: String, _ ru: String) -> String {
             }
         }
         displays.render(coordinator.snapshot)
+        previews.reconcile()
     }
     func image(_ definition: AppDefinition?) -> NSImage? { definition.flatMap { images[$0] } ?? NSImage(named: NSImage.applicationIconName) }
     func windowTitle(_ id: InstanceID?) -> String? { id.flatMap { windowTitles[$0] } }
@@ -279,6 +284,7 @@ func tr(_ en: String, _ ru: String) -> String {
         settingsWindow.refresh()
     }
     @objc func togglePanels() {
+        previews.close()
         displays.hidden.toggle()
         displays.reconcile()
         synchronizeDockVisibility()
@@ -298,6 +304,16 @@ func tr(_ en: String, _ ru: String) -> String {
     @objc func permissionStatus() { showInfo(tr("Accessibility", "Универсальный доступ"), tr(permissions.status.explanation, permissions.trusted ? "Доступ включён. Управление отдельными окнами зависит от приложения." : "Для выбора, восстановления и сворачивания окон нужен Универсальный доступ. Переключение процессов, запуск и завершение доступны без него.")) }
     @objc func requestPermission() { permissionExplained = true; permissionStatus(); permissions.requestAccessFromUserAction() }
     @objc func permissionSettings() { permissions.openSettingsFromUserAction() }
+    func requestScreenRecording() {
+        // Only explicit user actions may initiate a TCC request.
+        let allowed = CGRequestScreenCaptureAccess()
+        if !allowed, let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
+        settingsWindow.refresh()
+        notify(allowed ? tr("Screen Recording enabled; reopen the preview (macOS may require restarting WMac).", "Запись экрана разрешена. Откройте предпросмотр снова (macOS может потребовать перезапуск WMac).") :
+                 tr("Allow WMac in Screen & System Audio Recording settings.", "Разрешите WMac доступ в настройках записи экрана и системного звука."))
+    }
     @objc func dockSettings() { if let url = URL(string: "x-apple.systempreferences:com.apple.Desktop-Settings.extension") { NSWorkspace.shared.open(url) } }
     @objc func showDetails() { showInfo(message, detail.isEmpty ? message : detail) }
     private func showInfo(_ title: String, _ text: String) {
@@ -312,41 +328,66 @@ func tr(_ en: String, _ ru: String) -> String {
         let menu = NSMenu()
         func action(_ en: String, _ ru: String, _ command: String, window: WindowReference? = nil) {
             let item = NSMenuItem(title: tr(en, ru), action: #selector(menuAction(_:)), keyEquivalent: "")
-            item.target = self; item.representedObject = MenuCommand(capture: capture, action: command, window: window); menu.addItem(item)
+            item.target = self
+            item.representedObject = MenuCommand(capture: capture, action: command, window: window)
+            if command == "window", let window { item.state = window.isFocused ? .on : .off }
+            menu.addItem(item)
         }
+        func separator() { menu.addItem(.separator()) }
         action(capture.instance == nil ? "Open" : "Switch", capture.instance == nil ? "Открыть" : "Переключиться", "switch")
         action("New instance", "Новый экземпляр", "new")
         if let id = capture.instance {
-            let windows = NSMenu(title: tr("Windows", "Окна"))
-            let placeholder = windows.addItem(withTitle: tr("Loading…", "Загрузка…"), action: nil, keyEquivalent: ""); placeholder.isEnabled = false
-            let parent = NSMenuItem(title: windows.title, action: nil, keyEquivalent: ""); parent.submenu = windows; menu.addItem(parent)
-            Task {
-                let result = await accessibility.windows(for: id)
-                windows.removeAllItems()
-                guard valid(capture) else { windows.addItem(withTitle: tr("Instance ended", "Экземпляр завершён"), action: nil, keyEquivalent: ""); return }
-                switch result {
+            action("Show windows…", "Показать окна…", "preview")
+            separator()
+            let submenu = NSMenu(title: tr("Windows", "Окна"))
+            // Build a complete immutable snapshot BEFORE native menu tracking.
+            // Async refresh is cached for a subsequent opening, not applied to a live NSMenu.
+            if let cached = menuWindowCache[id], Date().timeIntervalSince(cached.date) < 5 {
+                switch cached.result {
                 case .unavailable(let reason):
-                    let item = windows.addItem(withTitle: tr("Accessibility unavailable", "Универсальный доступ недоступен"), action: nil, keyEquivalent: ""); item.toolTip = reason
-                case .windows(let values):
-                    if values.isEmpty { windows.addItem(withTitle: tr("No manageable windows", "Нет управляемых окон"), action: nil, keyEquivalent: "") }
-                    for value in values {
-                        let item = NSMenuItem(title: value.title, action: #selector(menuAction(_:)), keyEquivalent: ""); item.target = self
-                        item.state = value.isFocused ? .on : .off; item.representedObject = MenuCommand(capture: capture, action: "window", window: value); windows.addItem(item)
+                    let unavailable = submenu.addItem(withTitle: tr("Windows unavailable", "Окна недоступны"), action: nil, keyEquivalent: "")
+                    unavailable.isEnabled = false; unavailable.toolTip = reason
+                case .windows(let windows):
+                    if windows.isEmpty {
+                        let empty = submenu.addItem(withTitle: tr("No manageable windows", "Нет управляемых окон"), action: nil, keyEquivalent: "")
+                        empty.isEnabled = false
+                    }
+                    for window in windows {
+                        let item = NSMenuItem(title: window.title + (window.isMinimized ? tr(" (minimized)", " (свёрнуто)") : ""), action: #selector(menuAction(_:)), keyEquivalent: "")
+                        item.target = self; item.state = window.isFocused ? .on : .off
+                        item.representedObject = MenuCommand(capture: capture, action: "window", window: window)
+                        submenu.addItem(item)
                     }
                 }
+            } else {
+                let loading = submenu.addItem(withTitle: tr("Loading… reopen to see windows", "Загрузка… откройте меню повторно"), action: nil, keyEquivalent: "")
+                loading.isEnabled = false
+                Task { [weak self] in
+                    guard let self else { return }
+                    let result = await accessibility.windows(for: id)
+                    if valid(capture) { menuWindowCache[id] = (Date(), result) }
+                }
             }
-            action("Hide", "Скрыть", "hide"); action("Terminate this instance", "Завершить этот экземпляр", "terminate")
+            let parent = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
+            parent.submenu = submenu; menu.addItem(parent)
+            separator()
+            action("Hide", "Скрыть", "hide")
+            action("Terminate this instance", "Завершить этот экземпляр", "terminate")
             action("Force terminate…", "Завершить принудительно…", "force")
         }
-        action("Reveal in Finder", "Показать в Finder", "reveal")
+        separator()
         if case .pin(let id) = capture.button {
             action("Unpin", "Открепить", "unpin")
             if let index = coordinator.pins.firstIndex(where: { $0.pin.id == id }) {
                 if index > 0 { action("Move pin left", "Переместить закрепление влево", "left") }
                 if index + 1 < coordinator.pins.count { action("Move pin right", "Переместить закрепление вправо", "right") }
-                if coordinator.pins[index].availability == .missing { action("Application not found — choose replacement…", "Приложение не найдено — выбрать новый путь…", "relink") }
+                if coordinator.pins[index].availability == .missing {
+                    action("Application not found — choose replacement…", "Приложение не найдено — выбрать новый путь…", "relink")
+                }
             }
         } else if capture.application != nil { action("Pin", "Закрепить", "pin") }
+        separator()
+        action("Reveal in Finder", "Показать в Finder", "reveal")
         action("PID / path information", "Сведения: PID / путь", "info")
         return menu
     }
@@ -362,11 +403,12 @@ func tr(_ en: String, _ ru: String) -> String {
         case "relink": chooseReplacement(capture)
         case "switch": click(capture, new: false)
         case "new": click(capture, new: true)
+        case "preview": previews.openExplicit(capture)
         case "window":
             explainPermission()
             if let window = command.window { Task { guard valid(capture) else { return }; let result = await accessibility.select(window); if result.outcome == .activatedOnly || result.outcome == .unavailable { notify(tr("Window action limited", "Действие окна ограничено"), result.message) } } }
-        case "hide": if let id = capture.instance { _ = monitor.running(id)?.hide() }
-        case "terminate": if let id = capture.instance { _ = monitor.terminate(id) }
+        case "hide": if let id = capture.instance { _ = monitor.running(id)?.hide(); previews.close() }
+        case "terminate": if let id = capture.instance { _ = monitor.terminate(id); previews.close() }
         case "force":
             let alert = NSAlert(); alert.messageText = tr("Force terminate this instance?", "Принудительно завершить этот экземпляр?"); alert.informativeText = tr("Unsaved work may be lost. PID: ", "Несохранённые данные могут быть потеряны. PID: ") + (capture.instance?.pid.description ?? "")
             alert.addButton(withTitle: tr("Cancel", "Отмена")); alert.addButton(withTitle: tr("Force terminate", "Завершить")); NSApp.activate()
@@ -386,7 +428,7 @@ func tr(_ en: String, _ ru: String) -> String {
         return .terminateLater
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    func applicationWillTerminate(_ notification: Notification) { dockVisibility.restore(); clock?.invalidate(); monitor.stop(); displays.close(); for token in tokens { NotificationCenter.default.removeObserver(token) } }
+    func applicationWillTerminate(_ notification: Notification) { previews.close(); dockVisibility.restore(); clock?.invalidate(); monitor.stop(); displays.close(); for token in tokens { NotificationCenter.default.removeObserver(token) } }
 }
 private struct MenuCommand { let capture: ButtonCapture; let action: String; let window: WindowReference? }
 
@@ -431,6 +473,9 @@ private actor PanelIcons {
         render(runtime.coordinator.snapshot)
     }
     func render(_ snapshot: TaskbarSnapshot) { for panel in panels.values { panel.bar.render(snapshot) } }
+    func anchor(for capture: ButtonCapture) -> NSView? {
+        panels.values.compactMap { $0.bar.anchor(for: capture) }.first(where: { $0.window?.isVisible == true })
+    }
     func close() { for panel in panels.values { panel.close() }; panels.removeAll() }
 }
 @MainActor private final class TaskbarPanel: NSPanel {
@@ -500,6 +545,7 @@ private actor PanelIcons {
         clock.stringValue = format.string(from: Date()).replacingOccurrences(of: ", ", with: "\n")
         place()
     }
+    func anchor(for capture: ButtonCapture) -> NSView? { buttons[capture.button] }
     private func place() {
         let regions = PanelRegions(width: bounds.width, contentWidth: content.frame.width, height: bounds.height)
         applications.frame = regions.launcher
@@ -520,6 +566,7 @@ private actor PanelIcons {
         return !urls.isEmpty && urls.allSatisfy { $0.isFileURL && $0.pathExtension.lowercased() == "app" } ? urls : []
     }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        runtime.previews.close()
         if dragOperation(sender) == .move, let source = sender.draggingSource as? ProcessButton, let id = source.draggedPin {
             let point = content.convert(sender.draggingLocation, from: nil)
             runtime.movePin(id, to: Int(max(0, point.x) / applicationItemPitch)); return true
@@ -546,6 +593,7 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
     private var iconSource: NSImage?
     private var displayedIconSize: CGFloat = 0
     private(set) var draggedPin: UUID?
+    private var hoverArea: NSTrackingArea?
     init(runtime: TaskbarDelegate) {
         self.runtime = runtime; super.init(frame: .zero)
         target = self; action = #selector(pressed); imagePosition = .imageOnly; imageScaling = .scaleProportionallyDown
@@ -554,6 +602,16 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
         setAccessibilityCustomActions([NSAccessibilityCustomAction(name: tr("Show actions", "Показать действия"), handler: { [weak self] in self?.accessibilityPerformShowMenu() ?? false })])
     }
     required init?(coder: NSCoder) { fatalError() }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        hoverArea = NSTrackingArea(rect: .zero, options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(hoverArea!)
+    }
+    override func mouseEntered(with event: NSEvent) {
+        if let capture { runtime.previews.entered(self, capture: capture) }
+    }
+    override func mouseExited(with event: NSEvent) { runtime.previews.exited(self) }
     func update(_ value: TaskbarButton, iconSize: CGFloat) {
         capture = ButtonCapture(value)
         let source = runtime.image(value.application)
@@ -597,6 +655,7 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
             if hypot(next.locationInWindow.x - event.locationInWindow.x, next.locationInWindow.y - event.locationInWindow.y) >= 5 { dragEvent = next; break }
         }
         if let dragEvent {
+            runtime.previews.close()
             guard case .pin(let id) = captured.button, runtime.valid(captured) else { return }
             draggedPin = id
             let writer = NSPasteboardItem(); writer.setString(id.uuidString, forType: pinDragType)
@@ -613,6 +672,7 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
     }
     override func accessibilityPerformShowMenu() -> Bool {
         guard let capture else { return false }
+        runtime.previews.menuOpening()
         runtime.contextMenu(capture).popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.maxY), in: self)
         return true
     }
@@ -620,7 +680,10 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
         if event.buttonNumber == 2, runtime.preferences.middleClickNewInstance, let capture { runtime.click(capture, new: true) }
     }
     override func otherMouseUp(with event: NSEvent) {}
-    override func menu(for event: NSEvent) -> NSMenu? { capture.map { runtime.contextMenu($0) } }
+    override func menu(for event: NSEvent) -> NSMenu? {
+        runtime.previews.menuOpening()
+        return capture.map { runtime.contextMenu($0) }
+    }
     override func rightMouseDown(with event: NSEvent) { if let menu = menu(for: event) { NSMenu.popUpContextMenu(menu, with: event, for: self) } }
 }
 
