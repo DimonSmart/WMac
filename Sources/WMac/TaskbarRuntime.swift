@@ -647,6 +647,7 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
         runtime.click(capture, new: event?.modifierFlags.contains(.shift) == true || event?.buttonNumber == 2)
     }
     override func mouseDown(with event: NSEvent) {
+        runtime.previews.close()
         if event.modifierFlags.contains(.control) { rightMouseDown(with: event); return }
         // Track explicitly so NSButton never dispatches a press after starting a drag.
         guard let captured = capture, let window else { return }
