@@ -1,2 +1,3 @@
 "CFBundleDisplayName" = "WMac!";
 "CFBundleName" = "WMac!";
+"NSScreenCaptureUsageDescription" = "WMac uses screen capture only to display window thumbnails with your permission.";
