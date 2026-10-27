@@ -256,7 +256,7 @@ private final class WindowPreviewView: NSView {
 
     init(name: String, windows: [WindowReference], information: String?) {
         let width = CGFloat(min(3, max(1, windows.count))) * 240 + 16
-        super.init(frame: NSRect(x: 0, y: 0, width: max(280, width), height: 246))
+        super.init(frame: NSRect(x: 0, y: 0, width: max(280, width), height: 278))
         wantsLayer = true
         layer?.cornerRadius = 12
         layer?.masksToBounds = true
@@ -265,24 +265,24 @@ private final class WindowPreviewView: NSView {
         backdrop.material = .popover
         backdrop.state = .active
         addSubview(backdrop)
-        header.frame = NSRect(x: 12, y: 213, width: max(210, bounds.width - 98), height: 22)
+        header.frame = NSRect(x: 12, y: 245, width: max(210, bounds.width - 98), height: 22)
         header.stringValue = name + " — " + String(windows.count)
         header.font = .boldSystemFont(ofSize: 13)
         addSubview(header)
         let reload = NSButton(title: tr("Refresh", "Обновить"), target: self, action: #selector(refresh))
-        reload.frame = NSRect(x: bounds.width - 78, y: 208, width: 70, height: 29)
+        reload.frame = NSRect(x: bounds.width - 78, y: 241, width: 70, height: 29)
         reload.autoresizingMask = [.minXMargin]
         addSubview(reload)
-        scroll.frame = NSRect(x: 8, y: 34, width: bounds.width - 16, height: 170)
+        scroll.frame = NSRect(x: 8, y: 38, width: bounds.width - 16, height: 198)
         scroll.autoresizingMask = [.width]
         scroll.drawsBackground = false
         scroll.hasHorizontalScroller = true
         scroll.documentView = strip
         addSubview(scroll)
-        strip.frame = NSRect(x: 0, y: 0, width: CGFloat(max(windows.count, 1)) * 240, height: 170)
+        strip.frame = NSRect(x: 0, y: 0, width: CGFloat(max(windows.count, 1)) * 240, height: 198)
         for (index, window) in windows.enumerated() {
             let card = WindowPreviewCard(window)
-            card.frame.origin = NSPoint(x: CGFloat(index) * 240 + 4, y: -10)
+            card.frame.origin = NSPoint(x: CGFloat(index) * 240 + 4, y: 4)
             card.choose = { [weak self] value in self?.onSelect?(value) }
             strip.addSubview(card); cards.append(card)
         }
@@ -343,8 +343,9 @@ private final class WindowThumbnailService {
         let geometry = available.map { GraphicalWindow(id: $0.windowID, title: $0.title ?? "", frame: $0.frame) }
         let associations = WindowMatcher.match(windows, to: geometry)
         for window in windows {
-            guard !Task.isCancelled, stillCurrent(), case .matched(let graphicsID) = associations[window.id],
-                  let source = available.first(where: { $0.windowID == graphicsID }) else { return }
+            guard !Task.isCancelled, stillCurrent() else { return }
+            guard case .matched(let graphicsID) = associations[window.id],
+                  let source = available.first(where: { $0.windowID == graphicsID }) else { continue }
             let key = Key(instance: instance, window: window.id, graphics: graphicsID)
             if let saved = cache[key], Date().timeIntervalSince(saved.date) < 10 {
                 onImage(window.id, saved.image, true)
@@ -357,7 +358,7 @@ private final class WindowThumbnailService {
             do {
                 let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: source), configuration: config)
                 guard stillCurrent(), !Task.isCancelled else { return }
-                let picture = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+                let picture = NSImage(cgImage: image, size: NSSize(width: CGFloat(image.width), height: CGFloat(image.height)))
                 let bytes = image.width * image.height * 4
                 cache[key] = Entry(image: picture, date: Date(), bytes: bytes)
                 trim()
