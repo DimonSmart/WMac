@@ -92,11 +92,11 @@ struct LiveSystemDockPreferences: SystemDockPreferencesBackend {
 }
 
 enum SystemDockRecovery {
-    static let values: [(String, Any)] = [
+    static var values: [(String, Any)] { [
         ("autohide", NSNumber(value: true)),
         ("autohide-delay", NSNumber(value: 1000.0)),
         ("autohide-time-modifier", NSNumber(value: 0.0))
-    ]
+    ] }
     static var directory: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/WMac", isDirectory: true)
@@ -240,8 +240,10 @@ enum SystemDockRecovery {
             try SystemDockRecovery.save(applying, to: stateURL)
             for entry in entries { try backend.write(entry.key, value: entry.applied) }
             try backend.synchronize()
-            for entry in entries where try backend.read(entry.key) != entry.applied {
-                throw SystemDockFailure.preference("verification failed for \(entry.key)")
+            for entry in entries {
+                if try backend.read(entry.key) != entry.applied {
+                    throw SystemDockFailure.preference("verification failed for \(entry.key)")
+                }
             }
             try backend.restartDock()
             applying.phase = "active"
