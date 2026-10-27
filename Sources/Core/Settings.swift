@@ -10,6 +10,24 @@ struct WMacSettings: Codable, Equatable, Sendable {
     var middleClick = true
     var exclusions: [AppDefinition] = []
     var dockGuidanceSeen = false
+    var hideSystemDock = false
+
+    init() {}
+    enum CodingKeys: String, CodingKey {
+        case allDisplays, height, opacity, theme, middleClick, exclusions, dockGuidanceSeen, hideSystemDock
+    }
+    init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        allDisplays = try c.decodeIfPresent(Bool.self, forKey: .allDisplays) ?? allDisplays
+        height = try c.decodeIfPresent(Double.self, forKey: .height) ?? height
+        opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? opacity
+        theme = try c.decodeIfPresent(Theme.self, forKey: .theme) ?? theme
+        middleClick = try c.decodeIfPresent(Bool.self, forKey: .middleClick) ?? middleClick
+        exclusions = try c.decodeIfPresent([AppDefinition].self, forKey: .exclusions) ?? exclusions
+        dockGuidanceSeen = try c.decodeIfPresent(Bool.self, forKey: .dockGuidanceSeen) ?? dockGuidanceSeen
+        hideSystemDock = try c.decodeIfPresent(Bool.self, forKey: .hideSystemDock) ?? false
+    }
     func validated() throws -> Self {
         guard height.isFinite, (40...64).contains(height), opacity.isFinite, (0.35...1).contains(opacity),
               exclusions.allSatisfy({ $0.url.isFileURL && !$0.bundleID.isEmpty }), Set(exclusions).count == exclusions.count else { throw SettingsError.invalid }
@@ -40,7 +58,7 @@ actor SettingsStore {
         let version = try JSONDecoder().decode(Header.self, from: data).version
         let result: WMacSettings
         switch version {
-        case 2: result = try JSONDecoder().decode(Document.self, from: data).settings
+        case 2, 3: result = try JSONDecoder().decode(Document.self, from: data).settings
         case 1:
             let old = try JSONDecoder().decode(Legacy.self, from: data)
             var migrated = WMacSettings(); migrated.allDisplays = old.allDisplays; migrated.height = old.height; migrated.middleClick = old.middleClick
@@ -48,12 +66,12 @@ actor SettingsStore {
         default: throw SettingsError.unsupported(version)
         }
         let valid = try result.validated()
-        if version == 1 { try save(valid) }
+        if version != 3 { try save(valid) }
         return valid
     }
     func save(_ value: WMacSettings) throws {
         let valid = try value.validated()
-        try io.write(JSONEncoder().encode(Document(version: 2, settings: valid)), url)
+        try io.write(JSONEncoder().encode(Document(version: 3, settings: valid)), url)
     }
     /// Explicit recovery preserves the exact damaged/future file before replacement.
     func recover() throws -> WMacSettings {
