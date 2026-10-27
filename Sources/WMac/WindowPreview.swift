@@ -228,8 +228,16 @@ private final class WindowPreviewPanel: NSPanel {
     override var canBecomeMain: Bool { false }
     override func cancelOperation(_ sender: Any?) { onEscape?() }
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { onEscape?() }
-        else { super.keyDown(with: event) }
+        if event.keyCode == 53 { onEscape?(); return }
+        if event.keyCode == 123 || event.keyCode == 126 {
+            (contentView as? WindowPreviewView)?.focus(direction: -1, in: self)
+            return
+        }
+        if event.keyCode == 124 || event.keyCode == 125 {
+            (contentView as? WindowPreviewView)?.focus(direction: 1, in: self)
+            return
+        }
+        super.keyDown(with: event)
     }
 }
 
@@ -380,6 +388,14 @@ private final class WindowPreviewView: NSView {
         strip.setFrameSize(NSSize(width: CGFloat(max(cards.count, 1)) * 240, height: 198))
         header.stringValue = name + " — " + String(cards.count)
         return staleAssociation
+    }
+    func focus(direction: Int, in panel: NSWindow) {
+        guard !cards.isEmpty else { return }
+        let index = cards.firstIndex(where: { $0 === panel.firstResponder }) ?? (direction > 0 ? -1 : cards.count)
+        let next = max(0, min(cards.count - 1, index + direction))
+        let card = cards[next]
+        panel.makeFirstResponder(card)
+        card.scrollToVisible(card.bounds)
     }
     func update(windowID: UUID, image: NSImage, cached: Bool) {
         cards.first(where: { $0.windowReference.id == windowID })?.show(image, cached: cached)
