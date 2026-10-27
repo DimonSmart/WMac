@@ -16,6 +16,8 @@ func tr(_ en: String, _ ru: String) -> String {
     lazy var launcher = LaunchService(monitor: monitor)
     lazy var displays = DisplayCoordinator(runtime: self)
     let settings = SettingsController()
+    let dockVisibility = SystemDockVisibilityService()
+    private var dockAttempted = false
     lazy var settingsWindow = SettingsWindowController(runtime: self)
     var preferences: PanelPreferences { PanelPreferences(middleClickNewInstance: settings.value.middleClick) }
     private var status: NSStatusItem!
@@ -34,6 +36,11 @@ func tr(_ en: String, _ ru: String) -> String {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        dockVisibility.recoverAtLaunch()
+        dockVisibility.changed = { [weak self] in
+            self?.settingsWindow.refresh()
+            self?.refreshMenus()
+        }
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         status.button?.title = "W"
         status.button?.toolTip = "WMac!"
@@ -63,6 +70,7 @@ func tr(_ en: String, _ ru: String) -> String {
         settings.changed = { [weak self] in
             guard let self else { return }
             coordinator.setExclusions(Set(settings.value.exclusions)); displays.reconcile()
+            synchronizeDockVisibility()
             settingsWindow.refresh()
             if let error = settings.failure { notify(tr("Settings recovery needed", "Нужно восстановить настройки"), error) }
             if settings.ready && !settings.value.dockGuidanceSeen {
@@ -172,6 +180,9 @@ func tr(_ en: String, _ ru: String) -> String {
             let value = NSMenuItem(title: tr(en, ru), action: selector, keyEquivalent: key); value.target = self; menu.addItem(value)
         }
         item(displays.hidden ? "Show taskbars" : "Hide taskbars", displays.hidden ? "Показать панели" : "Скрыть панели", #selector(togglePanels))
+        if dockVisibility.needsRecovery {
+            item("Restore system Dock", "Восстановить системный Dock", #selector(restoreSystemDock))
+        }
         if pinMutations.failure != nil { item("Retry pins", "Повторить загрузку/сохранение закреплений", #selector(retryPins)) }
         let pinMenu = NSMenu(title: tr("Pinned applications", "Закреплённые приложения"))
         for button in coordinator.snapshot.buttons where button.pinID != nil {
@@ -194,14 +205,40 @@ func tr(_ en: String, _ ru: String) -> String {
     private func refreshMenus() {
         status.menu = controlsMenu(); NSApp.mainMenu?.items.first?.submenu = controlsMenu()
     }
-    @objc func togglePanels() { displays.hidden.toggle(); displays.reconcile(); refreshMenus() }
+    private func synchronizeDockVisibility() {
+        guard settings.ready else { return }
+        if !settings.value.hideSystemDock || displays.hidden {
+            if dockVisibility.needsRecovery { dockVisibility.restore() }
+            dockAttempted = false
+        } else if !dockAttempted {
+            dockAttempted = true
+            dockVisibility.enable(panelsReady: displays.hasUsablePanels)
+        }
+    }
+    @objc func restoreSystemDock() {
+        dockVisibility.restore()
+        dockAttempted = false
+        if settings.ready { settings.edit { $0.hideSystemDock = false } }
+        refreshMenus()
+        settingsWindow.refresh()
+    }
+    @objc func togglePanels() {
+        displays.hidden.toggle()
+        displays.reconcile()
+        synchronizeDockVisibility()
+        refreshMenus()
+    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        displays.hidden = false; displays.reconcile(); refreshMenus(); return false
+        displays.hidden = false
+        displays.reconcile()
+        synchronizeDockVisibility()
+        refreshMenus()
+        return false
     }
     @objc func showSettings() { settingsWindow.show() }
     @objc func quit() { NSApp.terminate(nil) }
     @objc func about() { showInfo("WMac!", tr("Native process taskbar. Local persistent settings. Ad-hoc signed DMG; macOS may require first-launch approval.", "Нативная панель процессов. Локальные настройки сохраняются. DMG с ad-hoc подписью; macOS может запросить подтверждение первого запуска.")) }
-    @objc func instructions() { showInfo(tr("Instructions", "Инструкция"), tr("Click an instance to switch. Shift-click or middle-click requests a new independent process. Right-click for windows and process actions. Use Tab and Space for buttons, Control-click or Shift-F10 for menus.\n\nWMac coexists with the system Dock. You may enable Dock auto-hide or move it to a side in System Settings → Desktop & Dock. WMac never changes Dock preferences or reserves screen space. Hide panels from the menu bar if they interfere. Fullscreen and Spaces behavior needs verification on your display setup.", "Нажмите на экземпляр для переключения. Shift-клик или средний клик запрашивает новый процесс. Правый клик открывает окна и действия. Tab и пробел управляют кнопками, Control-клик или Shift-F10 — меню.\n\nСистемный Dock остаётся доступен. Автоскрытие или расположение сбоку можно включить в Системных настройках → Рабочий стол и Dock. WMac не меняет настройки Dock и не резервирует экран. При необходимости скройте панели из строки меню. Полноэкранный режим и Spaces требуют проверки на вашем оборудовании.")) }
+    @objc func instructions() { showInfo(tr("Instructions", "Инструкция"), tr("Click an instance to switch. Shift-click or middle-click requests a new independent process. Right-click for windows and process actions. Use Tab and Space for buttons, Control-click or Shift-F10 for menus.\n\nWMac coexists with the system Dock. You may enable Dock auto-hide or move it to a side in System Settings → Desktop & Dock. WMac can temporarily hide Dock with explicit consent in General settings; it restores the original preferences when the mode is disabled or WMac quits. It never reserves screen space. Hide panels from the menu bar if they interfere. Fullscreen and Spaces behavior needs verification on your display setup.", "Нажмите на экземпляр для переключения. Shift-клик или средний клик запрашивает новый процесс. Правый клик открывает окна и действия. Tab и пробел управляют кнопками, Control-клик или Shift-F10 — меню.\n\nСистемный Dock остаётся доступен. Автоскрытие или расположение сбоку можно включить в Системных настройках → Рабочий стол и Dock. WMac может временно скрывать Dock по вашему выбору в разделе «Общие», восстанавливая прежние параметры при выключении режима или выходе. Экранное пространство не резервируется. При необходимости скройте панели из строки меню. Полноэкранный режим и Spaces требуют проверки на вашем оборудовании.")) }
     @objc func permissionStatus() { showInfo(tr("Accessibility", "Универсальный доступ"), tr(permissions.status.explanation, permissions.trusted ? "Доступ включён. Управление отдельными окнами зависит от приложения." : "Для выбора, восстановления и сворачивания окон нужен Универсальный доступ. Переключение процессов, запуск и завершение доступны без него.")) }
     @objc func requestPermission() { permissionExplained = true; permissionStatus(); permissions.requestAccessFromUserAction() }
     @objc func permissionSettings() { permissions.openSettingsFromUserAction() }
@@ -284,11 +321,16 @@ func tr(_ en: String, _ ru: String) -> String {
         }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        Task { await settings.settled(); await pinMutations.wait(); sender.reply(toApplicationShouldTerminate: true) }
+        Task {
+            await settings.settled()
+            await pinMutations.wait()
+            dockVisibility.restore()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
         return .terminateLater
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
-    func applicationWillTerminate(_ notification: Notification) { clock?.invalidate(); monitor.stop(); displays.close(); for token in tokens { NotificationCenter.default.removeObserver(token) } }
+    func applicationWillTerminate(_ notification: Notification) { dockVisibility.restore(); clock?.invalidate(); monitor.stop(); displays.close(); for token in tokens { NotificationCenter.default.removeObserver(token) } }
 }
 private struct MenuCommand { let capture: ButtonCapture; let action: String; let window: WindowReference? }
 
@@ -306,6 +348,7 @@ private actor PanelIcons {
     unowned let runtime: TaskbarDelegate
     var hidden = false
     private var panels: [UInt32: TaskbarPanel] = [:]
+    var hasUsablePanels: Bool { !hidden && !panels.isEmpty }
     init(runtime: TaskbarDelegate) { self.runtime = runtime }
     func reconcile() {
         let screens = NSScreen.screens.filter { runtime.settings.value.allDisplays || ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == CGMainDisplayID() }.compactMap { screen -> (DisplayLayout, NSScreen)? in
