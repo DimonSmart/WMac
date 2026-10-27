@@ -138,6 +138,11 @@ enum SystemDockRecovery {
     // The same routine is used by the app and by the crash watchdog.
     @discardableResult static func restore(_ url: URL, backend: any SystemDockPreferencesBackend) throws -> [String] {
         guard var state = try load(url) else { return [] }
+        // A prepared transaction has not written any preferences yet.
+        if state.phase == "prepared" {
+            try FileManager.default.removeItem(at: url)
+            return []
+        }
         state.phase = "restoring"
         try save(state, to: url)
         var conflicts: [String] = []
@@ -145,8 +150,10 @@ enum SystemDockRecovery {
         for entry in state.entries {
             let current = try backend.read(entry.key)
             if current == entry.applied {
-                try backend.write(entry.key, value: entry.original)
-                changed = true
+                if current != entry.original {
+                    try backend.write(entry.key, value: entry.original)
+                    changed = true
+                }
             } else if current != entry.original {
                 conflicts.append(entry.key)
             }
@@ -238,14 +245,17 @@ enum SystemDockRecovery {
             var applying = state
             applying.phase = "applying"
             try SystemDockRecovery.save(applying, to: stateURL)
-            for entry in entries { try backend.write(entry.key, value: entry.applied) }
-            try backend.synchronize()
-            for entry in entries {
-                if try backend.read(entry.key) != entry.applied {
-                    throw SystemDockFailure.preference("verification failed for \(entry.key)")
+            let modifications = entries.filter { $0.original != $0.applied }
+            if !modifications.isEmpty {
+                for entry in modifications { try backend.write(entry.key, value: entry.applied) }
+                try backend.synchronize()
+                for entry in entries {
+                    if try backend.read(entry.key) != entry.applied {
+                        throw SystemDockFailure.preference("verification failed for \(entry.key)")
+                    }
                 }
+                try backend.restartDock()
             }
-            try backend.restartDock()
             applying.phase = "active"
             try SystemDockRecovery.save(applying, to: stateURL)
             status = .active
@@ -294,5 +304,11 @@ enum SystemDockRecovery {
             throw SystemDockFailure.watchdog
         }
         watchdog = process
+        process.terminationHandler = { [weak self] terminated in
+            Task { @MainActor [weak self] in
+                guard let self, self.watchdog === terminated, self.active else { return }
+                self.restore()
+            }
+        }
     }
 }
