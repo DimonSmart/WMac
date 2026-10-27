@@ -29,7 +29,7 @@ helper="$app/Contents/Helpers/WMacDockWatchdog"
 [[ -x "$helper" ]] || fail 'Dock watchdog helper not embedded'
 codesign --force --sign - --options runtime --timestamp=none "$helper"
 codesign --force --sign - --options runtime --timestamp=none "$app"
-"$root/scripts/verify-release-app.sh" "$app" "$version" "$build" >"$output/app-verification.log" 2>&1 || fail "App verification failed; see $output/app-verification.log"
+"$root/scripts/verify-release-app.sh" "$app" "$version" "$build" >"$output/app-verification.log" 2>&1 || { cat "$output/app-verification.log" >&2; fail "App verification failed; see $output/app-verification.log"; }
 ln -s /Applications "$output/stage/Applications"
 pending="$output/WMac-$version-$build.unverified.dmg"
 dmg="$output/WMac-$version-$build.dmg"
