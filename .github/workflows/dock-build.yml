@@ -9,6 +9,7 @@ on:
       - 'Sources/WMac/**'
       - 'Sources/Core/Settings.swift'
       - 'WMac.xcodeproj/**'
+      - 'scripts/**'
       - 'Tests/**'
       - '.github/workflows/dock-build.yml'
   workflow_dispatch:
