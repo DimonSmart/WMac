@@ -8,6 +8,14 @@ import Foundation
     let url = folder.appendingPathComponent("settings.json")
     let store = SettingsStore(url: url)
     check(try await store.load() == WMacSettings(), "missing settings use sensible defaults")
+    let defaultPreview = WMacSettings()
+    check(!defaultPreview.shouldPreview(0, app: nil) && !defaultPreview.shouldPreview(1, app: nil) &&
+          defaultPreview.shouldPreview(2, app: nil) && defaultPreview.showWindowThumbnails,
+          "automatic previews require two AX windows and thumbnails are opt-in by OS permission")
+    var neverPreview = defaultPreview
+    neverPreview.hoverPreviews = .disabled
+    check(!neverPreview.shouldPreview(4, app: nil), "disabled hover never opens automatically")
+
     var value = WMacSettings(); value.theme = .dark; value.height = 40; value.opacity = 0.35; value.middleClick = false
     let a = AppDefinition(url: URL(fileURLWithPath: "/Applications/A.app"), bundleID: "a")
     let b = AppDefinition(url: URL(fileURLWithPath: "/Applications/B.app"), bundleID: "a")
