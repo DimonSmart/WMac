@@ -449,6 +449,7 @@ private actor PanelIcons {
     var hasUsablePanels: Bool { !hidden && !panels.isEmpty }
     init(runtime: TaskbarDelegate) { self.runtime = runtime }
     func reconcile() {
+        runtime.previews.close()
         let screens = NSScreen.screens.filter { runtime.settings.value.allDisplays || ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == CGMainDisplayID() }.compactMap { screen -> (DisplayLayout, NSScreen)? in
             guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
             return (DisplayLayout(id: id.uint32Value, frame: screen.frame), screen)
@@ -583,7 +584,7 @@ private actor PanelIcons {
         scroll.contentView.scroll(to: NSPoint(x: x, y: 0)); scroll.reflectScrolledClipView(scroll.contentView)
     }
     @objc private func showApplications() { runtime.showApplications(from: applications) }
-    @objc private func showControls() { runtime.controlsMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: controls.bounds.maxY), in: controls) }
+    @objc private func showControls() { runtime.previews.menuOpening(); runtime.controlsMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: controls.bounds.maxY), in: controls) }
 }
 private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
 
@@ -622,8 +623,9 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
         }
         let pending = runtime.pendingCount(value.application)
         let label = (value.availability == .missing ? tr("Application not found: ", "Приложение не найдено: ") : "") + value.name + (value.ordinal.map { tr(" — instance \($0)", " — экземпляр \($0)") } ?? "") + (value.instance.map { " — PID \($0.id.pid)" } ?? "")
-        toolTip = label + (runtime.windowTitle(value.instance?.id).map { " — " + $0 } ?? "") + (pending > 0 ? tr(" — pending: \(pending)", " — ожидание: \(pending)") : "")
-        setAccessibilityLabel(label); setAccessibilityHelp(toolTip)
+        let hint = label + (runtime.windowTitle(value.instance?.id).map { " — " + $0 } ?? "") + (pending > 0 ? tr(" — pending: \(pending)", " — ожидание: \(pending)") : "")
+        toolTip = runtime.previews.isShowing(ButtonCapture(value)) ? nil : hint
+        setAccessibilityLabel(label); setAccessibilityHelp(hint)
         setAccessibilityValue(value.isActive ? tr("Active", "Активен") : (pending > 0 ? tr("Pending", "Ожидание") : ""))
         layer?.backgroundColor = (value.isActive ? NSColor.controlAccentColor.withAlphaComponent(0.30) : NSColor.clear).cgColor
         title = value.instance != nil ? "•" : ""; needsDisplay = true
