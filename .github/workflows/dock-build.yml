@@ -1,0 +1,28 @@
+name: Validate system Dock feature
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Sources/Core/SystemDockVisibilityService.swift'
+      - 'Sources/Watchdog/**'
+      - 'Sources/WMac/**'
+      - 'Sources/Core/Settings.swift'
+      - 'WMac.xcodeproj/**'
+      - 'Tests/**'
+      - '.github/workflows/dock-build.yml'
+  workflow_dispatch:
+
+jobs:
+  compile:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build WMac and embedded watchdog
+        run: |
+          xcodebuild -project WMac.xcodeproj -target WMac -configuration Debug -derivedDataPath "$RUNNER_TEMP/WMacDerived" CODE_SIGNING_ALLOWED=NO build
+      - name: Run model checks (without modifying Dock)
+        run: |
+          mkdir -p .build/tests
+          xcrun swiftc -swift-version 6 -o .build/tests/ModelTests Sources/Core/*.swift Tests/*.swift
+          .build/tests/ModelTests
