@@ -1,10 +1,10 @@
-name: Validate system Dock feature
+name: Validate WMac
 
 on:
   push:
     branches: [main]
     paths:
-      - 'Sources/Core/SystemDockVisibilityService.swift'
+      - 'Sources/Core/**'
       - 'Sources/Watchdog/**'
       - 'Sources/WMac/**'
       - 'Sources/Core/Settings.swift'
