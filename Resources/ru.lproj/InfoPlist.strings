@@ -1,2 +1,3 @@
 "CFBundleDisplayName" = "WMac!";
 "CFBundleName" = "WMac!";
+"NSScreenCaptureUsageDescription" = "WMac использует запись экрана только для миниатюр окон с разрешения пользователя.";
