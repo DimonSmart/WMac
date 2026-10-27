@@ -9,6 +9,7 @@ final class WindowPreviewController {
     private var panel: WindowPreviewPanel?
     private var content: WindowPreviewView?
     private weak var source: NSView?
+    private var oldTooltip: String?
     private var current: ButtonCapture?
     private var hoverTask: Task<Void, Never>?
     private var closeTask: Task<Void, Never>?
@@ -25,7 +26,10 @@ final class WindowPreviewController {
         if current?.button == capture.button && current?.instance == capture.instance && panel != nil { return }
         hoverTask?.cancel()
         if panel != nil { close() }
-        guard capture.instance != nil, !runtime.displays.hidden else { return }
+        pointerOnButton = true
+        generation = UUID()
+        guard capture.instance != nil, !runtime.displays.hidden,
+              runtime.settings.value.hoverMode(for: capture.application) != .disabled else { return }
         source = button
         hoverTask = Task { [weak self, weak button] in
             try? await Task.sleep(for: .milliseconds(450))
@@ -62,13 +66,18 @@ final class WindowPreviewController {
 
     func settingsChanged() {
         if !runtime.settings.value.showWindowThumbnails { thumbnails.clear() }
-        reconcile()
+        close()
+    }
+    func isShowing(_ capture: ButtonCapture) -> Bool {
+        panel != nil && current?.button == capture.button && current?.instance == capture.instance
     }
 
     func close() {
         hoverTask?.cancel(); closeTask?.cancel(); imageTask?.cancel()
         hoverTask = nil; closeTask = nil; imageTask = nil
         generation = UUID()
+        if let button = source as? NSButton, let oldTooltip { button.toolTip = oldTooltip }
+        self.oldTooltip = nil
         panel?.orderOut(nil); panel?.close()
         panel = nil; content = nil; current = nil; source = nil
         pointerOnPanel = false; pointerOnButton = false
@@ -88,7 +97,8 @@ final class WindowPreviewController {
         let token = UUID()
         generation = token
         let result = await runtime.accessibility.windows(for: id)
-        guard generation == token, runtime.valid(capture), (explicit || pointerOnButton) else { return }
+        guard !Task.isCancelled, generation == token, runtime.valid(capture),
+              (explicit || (pointerOnButton && self.source === button)) else { return }
         let windows: [WindowReference]
         let information: String?
         switch result {
@@ -124,6 +134,10 @@ final class WindowPreviewController {
         popup.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         popup.appearance = runtime.settings.value.theme == .system ? nil : NSAppearance(named: runtime.settings.value.theme == .dark ? .darkAqua : .aqua)
         source = button
+        if let button = button as? NSButton {
+            oldTooltip = button.toolTip
+            button.toolTip = nil
+        }
         current = capture
         panel = popup; content = view
         popup.orderFront(nil)
