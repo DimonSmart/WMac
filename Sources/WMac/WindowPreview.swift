@@ -60,6 +60,7 @@ final class WindowPreviewController {
     }
 
     func reconcile() {
+        thumbnails.purge(live: Set(runtime.coordinator.snapshot.buttons.compactMap { $0.instance?.id }))
         guard let current else { return }
         if runtime.displays.hidden || !runtime.valid(current) ||
            (source != nil && (source?.window == nil || source?.isHiddenOrHasHiddenAncestor == true)) { close() }
@@ -158,6 +159,13 @@ final class WindowPreviewController {
                     try? await Task.sleep(for: .seconds(2))
                     guard !Task.isCancelled, let self, self.current?.instance == id,
                           self.runtime.valid(capture), self.panel != nil else { return }
+                    if !CGPreflightScreenCaptureAccess() {
+                        self.thumbnails.clear()
+                        self.imageTask?.cancel()
+                        self.content?.clearImages()
+                        self.content?.setPermissionHint(allowImages: self.runtime.settings.value.showWindowThumbnails,
+                                                         axTrusted: self.runtime.permissions.trusted)
+                    }
                     let latest = await self.runtime.accessibility.windows(for: id)
                     guard !Task.isCancelled, self.panel != nil, self.current?.instance == id else { return }
                     if case .windows(let updated) = latest, let view = self.content, view.reconcile(updated) {
@@ -289,6 +297,11 @@ private final class WindowPreviewCard: NSButton {
         layer?.backgroundColor = (reference.isFocused ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.22) : NSColor.controlBackgroundColor).cgColor
         stateField.stringValue = reference.isMinimized ? tr("Minimized", "Свёрнуто") : (reference.isFocused ? tr("Active", "Активно") : "")
     }
+    func clearImage() {
+        picture.image = NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil)
+        picture.toolTip = tr("Thumbnail unavailable", "Миниатюра недоступна")
+        stateField.stringValue = windowReference.isMinimized ? tr("Minimized", "Свёрнуто") : (windowReference.isFocused ? tr("Active", "Активно") : "")
+    }
     func show(_ image: NSImage, cached: Bool) {
         picture.image = image
         picture.toolTip = cached ? tr("Previously captured frame", "Предыдущий снимок") : nil
@@ -400,6 +413,7 @@ private final class WindowPreviewView: NSView {
         panel.makeFirstResponder(card)
         card.scrollToVisible(card.bounds)
     }
+    func clearImages() { for card in cards { card.clearImage() } }
     func update(windowID: UUID, image: NSImage, cached: Bool) {
         cards.first(where: { $0.windowReference.id == windowID })?.show(image, cached: cached)
     }
@@ -431,6 +445,9 @@ private final class WindowThumbnailService {
         else { waiting.removeFirst().resume() }
     }
     func clear() { cache.removeAll() }
+    func purge(live: Set<InstanceID>) {
+        cache = cache.filter { live.contains($0.key.instance) }
+    }
 
     func load(_ windows: [WindowReference], instance: InstanceID,
               stillCurrent: @escaping @MainActor () -> Bool,
