@@ -26,6 +26,19 @@ for architecture in arm64 x86_64; do
     $1 == "minos" { found = 1; if ($2 != "14.0") bad = 1 }
     END { if (!found || bad || !platform) exit 1 }' || fail "Unexpected $architecture deployment metadata"
 done
+helper="$app/Contents/Helpers/WMacDockWatchdog"
+[[ -f "$helper" && -x "$helper" && ! -L "$helper" ]] || fail 'Dock helper missing or not executable'
+helper_architectures="$(lipo -archs "$helper")"
+[[ "$helper_architectures" == 'x86_64 arm64' || "$helper_architectures" == 'arm64 x86_64' ]] || fail 'Dock helper must be universal'
+for architecture in arm64 x86_64; do
+  xcrun vtool -arch "$architecture" -show-build "$helper" | awk '
+    $1 == "platform" { platform = ($2 == "MACOS") }
+    $1 == "minos" { found = 1; if ($2 != "14.0") bad = 1 }
+    END { if (!found || bad || !platform) exit 1 }' || fail "Unexpected helper $architecture deployment metadata"
+  helper_signature="$(codesign -d --arch "$architecture" --verbose=4 "$helper" 2>&1)"
+  [[ "$helper_signature" =~ flags=.*[\(,]runtime[\),] ]] || fail "Dock helper $architecture Hardened Runtime required"
+done
+codesign --verify --strict --verbose=2 "$helper"
 codesign --verify --deep --strict --verbose=2 "$app"
 for architecture in arm64 x86_64; do
   signature="$(codesign -d --arch "$architecture" --verbose=4 "$app" 2>&1)"
