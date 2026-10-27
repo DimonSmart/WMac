@@ -14,6 +14,7 @@ final class WindowPreviewController {
     private var hoverTask: Task<Void, Never>?
     private var closeTask: Task<Void, Never>?
     private var imageTask: Task<Void, Never>?
+    private var snapshotTask: Task<Void, Never>?
     private var generation = UUID()
     private var pointerOnButton = false
     private var pointerOnPanel = false
@@ -73,8 +74,8 @@ final class WindowPreviewController {
     }
 
     func close() {
-        hoverTask?.cancel(); closeTask?.cancel(); imageTask?.cancel()
-        hoverTask = nil; closeTask = nil; imageTask = nil
+        hoverTask?.cancel(); closeTask?.cancel(); imageTask?.cancel(); snapshotTask?.cancel()
+        hoverTask = nil; closeTask = nil; imageTask = nil; snapshotTask = nil
         generation = UUID()
         if let button = source as? NSButton, let oldTooltip { button.toolTip = oldTooltip }
         self.oldTooltip = nil
@@ -147,17 +148,37 @@ final class WindowPreviewController {
             if let first = view.cards.first { popup.makeFirstResponder(first) }
         }
 
-        if !windows.isEmpty && runtime.settings.value.showWindowThumbnails && CGPreflightScreenCaptureAccess() {
-            imageTask = Task { [weak self] in
-                guard let self else { return }
-                await self.thumbnails.load(windows, instance: id, stillCurrent: { [weak self] in
-                    guard let self else { return false }
-                    return self.generation == token && self.panel != nil && self.runtime.valid(capture)
-                }, onImage: { [weak self] windowID, image, cached in
-                    guard let self, self.generation == token else { return }
-                    self.content?.update(windowID: windowID, image: image, cached: cached)
-                })
+        startImages(windows, instance: id, capture: capture, token: token)
+        if !windows.isEmpty {
+            snapshotTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(2))
+                    guard !Task.isCancelled, let self, self.current?.instance == id,
+                          self.runtime.valid(capture), self.panel != nil else { return }
+                    let latest = await self.runtime.accessibility.windows(for: id)
+                    guard !Task.isCancelled, self.panel != nil, self.current?.instance == id else { return }
+                    if case .windows(let updated) = latest, let view = self.content, view.reconcile(updated) {
+                        self.generation = UUID()
+                        self.imageTask?.cancel()
+                        self.startImages(updated, instance: id, capture: capture, token: self.generation)
+                    }
+                }
             }
+        }
+    }
+
+    private func startImages(_ windows: [WindowReference], instance: InstanceID, capture: ButtonCapture, token: UUID) {
+        guard !windows.isEmpty, runtime.settings.value.showWindowThumbnails, CGPreflightScreenCaptureAccess() else { return }
+        imageTask?.cancel()
+        imageTask = Task { [weak self] in
+            guard let self else { return }
+            await self.thumbnails.load(windows, instance: instance, stillCurrent: { [weak self] in
+                guard let self else { return false }
+                return self.generation == token && self.panel != nil && self.runtime.valid(capture)
+            }, onImage: { [weak self] windowID, image, cached in
+                guard let self, self.generation == token else { return }
+                self.content?.update(windowID: windowID, image: image, cached: cached)
+            })
         }
     }
 
@@ -214,7 +235,7 @@ private final class WindowPreviewPanel: NSPanel {
 
 @MainActor
 private final class WindowPreviewCard: NSButton {
-    let windowReference: WindowReference
+    private(set) var windowReference: WindowReference
     private let picture = NSImageView()
     private let titleField = NSTextField(labelWithString: "")
     private let stateField = NSTextField(labelWithString: "")
@@ -245,6 +266,18 @@ private final class WindowPreviewCard: NSButton {
     }
     required init?(coder: NSCoder) { fatalError() }
     @objc private func pick() { choose?(windowReference) }
+    func update(_ reference: WindowReference) {
+        if reference.title != windowReference.title || reference.frame != windowReference.frame {
+            picture.image = NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil)
+        }
+        windowReference = reference
+        titleField.stringValue = reference.title
+        toolTip = reference.title
+        setAccessibilityLabel(reference.title + (reference.isMinimized ? tr(", minimized", ", свёрнуто") : "") +
+                              (reference.isFocused ? tr(", active", ", активно") : ""))
+        layer?.backgroundColor = (reference.isFocused ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.22) : NSColor.controlBackgroundColor).cgColor
+        stateField.stringValue = reference.isMinimized ? tr("Minimized", "Свёрнуто") : (reference.isFocused ? tr("Active", "Активно") : "")
+    }
     func show(_ image: NSImage, cached: Bool) {
         picture.image = image
         picture.toolTip = cached ? tr("Previously captured frame", "Предыдущий снимок") : nil
@@ -256,6 +289,7 @@ private final class WindowPreviewCard: NSButton {
 @MainActor
 private final class WindowPreviewView: NSView {
     private let header = NSTextField(labelWithString: "")
+    private let name: String
     private let info = NSTextField(labelWithString: "")
     private let permission = NSButton(title: "", target: nil, action: nil)
     private let scroll = NSScrollView()
@@ -269,6 +303,7 @@ private final class WindowPreviewView: NSView {
     private var area: NSTrackingArea?
 
     init(name: String, windows: [WindowReference], information: String?) {
+        self.name = name
         let width = CGFloat(min(3, max(1, windows.count))) * 240 + 16
         super.init(frame: NSRect(x: 0, y: 0, width: max(280, width), height: 278))
         wantsLayer = true
@@ -321,6 +356,30 @@ private final class WindowPreviewView: NSView {
             permission.title = tr("Allow window thumbnails…", "Разрешить миниатюры окон…")
         } else { return }
         permission.isHidden = false
+    }
+    /// Returns true when a fresh thumbnail association is required.
+    @discardableResult func reconcile(_ windows: [WindowReference]) -> Bool {
+        let oldIDs = Set(cards.map { $0.windowReference.id })
+        let updatedByID = Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0) })
+        let updatedIDs = Set(windows.map(\.id))
+        let staleAssociation = oldIDs != updatedIDs || cards.contains { card in
+            guard let current = updatedByID[card.windowReference.id] else { return true }
+            return current.title != card.windowReference.title || current.frame != card.windowReference.frame
+        }
+        for card in cards where !updatedIDs.contains(card.windowReference.id) { card.removeFromSuperview() }
+        cards.removeAll { !updatedIDs.contains($0.windowReference.id) }
+        for card in cards {
+            if let latest = updatedByID[card.windowReference.id] { card.update(latest) }
+        }
+        for window in windows where !cards.contains(where: { $0.windowReference.id == window.id }) {
+            let card = WindowPreviewCard(window)
+            card.choose = { [weak self] value in self?.onSelect?(value) }
+            strip.addSubview(card); cards.append(card)
+        }
+        for (index, card) in cards.enumerated() { card.frame.origin = NSPoint(x: CGFloat(index) * 240 + 4, y: 4) }
+        strip.setFrameSize(NSSize(width: CGFloat(max(cards.count, 1)) * 240, height: 198))
+        header.stringValue = name + " — " + String(cards.count)
+        return staleAssociation
     }
     func update(windowID: UUID, image: NSImage, cached: Bool) {
         cards.first(where: { $0.windowReference.id == windowID })?.show(image, cached: cached)
