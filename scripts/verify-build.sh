@@ -9,6 +9,11 @@ for configuration in Debug Release; do
     [[ " $architectures " == *" arm64 "* && " $architectures " == *" x86_64 "* ]]
     echo "PASS $configuration $product architectures=$architectures"
   done
+  helper=".build/products/$configuration/WMac.app/Contents/Helpers/WMacDockWatchdog"
+  [[ -x "$helper" ]]
+  architectures="$(lipo -archs "$helper")"
+  [[ " $architectures " == *" arm64 "* && " $architectures " == *" x86_64 "* ]]
+  echo "PASS $configuration WMacDockWatchdog architectures=$architectures"
   plist=".build/products/$configuration/WMac.app/Contents/Info.plist"
   [[ "$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")" == '14.0' ]]
   [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" == 'app.wmac.WMac' ]]
