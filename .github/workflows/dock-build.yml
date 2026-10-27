@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build WMac and embedded watchdog
         run: |
-          xcodebuild -project WMac.xcodeproj -target WMac -configuration Debug -derivedDataPath "$RUNNER_TEMP/WMacDerived" CODE_SIGNING_ALLOWED=NO build
+          xcodebuild -project WMac.xcodeproj -target WMac -configuration Debug SYMROOT="$RUNNER_TEMP/WMacProducts" OBJROOT="$RUNNER_TEMP/WMacObjects" CODE_SIGNING_ALLOWED=NO build
       - name: Run model checks (without modifying Dock)
         run: |
           mkdir -p .build/tests
