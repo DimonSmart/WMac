@@ -202,7 +202,7 @@ if case .windows(let initial) = await windowService.windows(for: windowInstance)
     check(lastActive.outcome == .restored && controlled.lock.withLock { controlled.values[0].focused }, "selection updates ordinary-switch last-active choice")
     controlled.edit { $0.values.removeFirst() }
     let vanished = await windowService.select(initial[0])
-    check(vanished.outcome == .activatedOnly && vanished.activationAccepted, "vanished selected window falls back to exact process without choosing another window")
+    check(vanished.outcome == .unavailable && !vanished.activationAccepted, "vanished explicitly selected window never activates an arbitrary app window")
     controlled.edit { $0.actionError = "Controlled AX action failure" }
     let failed = await windowService.switchTo(windowInstance)
     check(failed.outcome == .activatedOnly && failed.message.contains("Controlled AX action failure"), "AX failures are explanatory process fallbacks rather than success")
@@ -221,6 +221,21 @@ if case .windows(let initial) = await windowService.windows(for: windowInstance)
     check(rejected.outcome == .unavailable && !rejected.activationAccepted, "activation rejection is observable even after AX action")
     check(controlled.lock.withLock { controlled.allCallsOffMain }, "all controlled enumeration/action calls execute off the main thread")
 } else { check(false, "controlled window snapshot must be available") }
+let previewOne = WindowReference(id: UUID(), instance: windowInstance, title: "Same", isMinimized: false, isFocused: true, canMinimize: true,
+                                 frame: CGRect(x: -1100, y: 50, width: 700, height: 420))
+let previewTwo = WindowReference(id: UUID(), instance: windowInstance, title: "Same", isMinimized: false, isFocused: false, canMinimize: true,
+                                 frame: CGRect(x: 100, y: 50, width: 700, height: 420))
+let graphics = [GraphicalWindow(id: 42, title: "Same", frame: previewOne.frame!),
+                GraphicalWindow(id: 43, title: "Same", frame: previewTwo.frame!)]
+let matches = WindowMatcher.match([previewOne, previewTwo], to: graphics)
+check(matches[previewOne.id] == .matched(42) && matches[previewTwo.id] == .matched(43),
+      "same-title AX windows match only when public geometry makes identities unique, including negative coordinates")
+let collision = WindowMatcher.match([previewOne, previewTwo], to: [GraphicalWindow(id: 42, title: "Same", frame: previewOne.frame!)])
+check(collision[previewTwo.id] == .unmatched, "unmatched AX window never borrows another screenshot")
+let duplicate = WindowMatcher.match([previewOne, previewOne], to: [graphics[0], graphics[1]])
+check(duplicate[previewOne.id] == .matched(42), "repeated identical AX reference retains a stable match")
+let ambiguous = WindowMatcher.match([previewOne], to: [graphics[0], GraphicalWindow(id: 45, title: "Same", frame: previewOne.frame!)])
+check(ambiguous[previewOne.id] == .ambiguous, "ambiguous graphical candidates never select a thumbnail")
 check(AccessibilityPermissionStatus(trusted: false).explanation.contains("Process switching"), "permission presentation explains retained process features")
 try await testApplicationCatalog(check)
 try await testPinMutations(check)
