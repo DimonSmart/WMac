@@ -55,7 +55,7 @@ func tr(_ en: String, _ ru: String) -> String {
         coordinator.changed = { [weak self] _ in self?.render() }
         displays.reconcile()
         tokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.displays.reconcile() }
+            Task { @MainActor in self?.displays.reconcile(); self?.synchronizeDockVisibility() }
         })
         clock = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in Task { @MainActor in self?.render() } }
         monitor.refresh()
@@ -210,9 +210,9 @@ func tr(_ en: String, _ ru: String) -> String {
         if !settings.value.hideSystemDock || displays.hidden {
             if dockVisibility.needsRecovery { dockVisibility.restore() }
             dockAttempted = false
-        } else if !dockAttempted {
+        } else if !dockAttempted && displays.hasUsablePanels {
             dockAttempted = true
-            dockVisibility.enable(panelsReady: displays.hasUsablePanels)
+            dockVisibility.enable(panelsReady: true)
         }
     }
     @objc func restoreSystemDock() {
