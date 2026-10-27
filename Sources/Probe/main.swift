@@ -51,8 +51,11 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
     defer { for instance in owned { _ = monitor.terminate(instance.id) }; monitor.stop() }
     print("REAL GUI INTEGRATION \(ISO8601DateFormatter().string(from: Date()))")
     print("OS \(ProcessInfo.processInfo.operatingSystemVersionString) AX trusted=\(ax.trusted)")
+    if args.contains("--require-ax") || args.contains("--require-no-ax") {
+        print("AX client: WMacProbe executable=\(CommandLine.arguments[0]), pid=\(ProcessInfo.processInfo.processIdentifier). AXIsProcessTrusted checks this process; WMac.app has a separate Accessibility identity.")
+    }
     if args.contains("--require-no-ax") && ax.trusted { print("NOT VERIFIED: no-AX scenario requires running from a host without Accessibility grant; current host is already trusted. No TCC changes made."); return 3 }
-    if args.contains("--require-ax") && !ax.trusted { print("NOT VERIFIED: explicit user Accessibility grant required. No TCC changes made."); return 3 }
+    if args.contains("--require-ax") && !ax.trusted { print("NOT VERIFIED: WMacProbe does not have Accessibility access. Grant the WMacProbe entry (or the responsible terminal shown by System Settings); WMac.app access is separate. No TCC changes made."); return 3 }
     func description(_ result: LaunchResult) -> String {
         switch result {
         case .success(let instance): return "success PID \(instance.id.pid)"
@@ -104,7 +107,7 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
     switch axResult {
     case .unavailable(let message):
         check(!ax.trusted, "without AX, window actions are limited: \(message)")
-        print("NOT VERIFIED: AX window enumeration/restore/raise requires an explicit user Accessibility grant to WMacProbe (or its responsible terminal). No grant changed.")
+        print("NOT VERIFIED: AX window enumeration/restore/raise requires an explicit user Accessibility grant to WMacProbe (or the responsible terminal shown by System Settings). WMac.app access is separate. No grant changed.")
     case .windows(let windows):
         check(windows.count == 2 && windows.allSatisfy { $0.instance == first.id }, "two standard AX windows belong to exact PID \(first.id.pid)")
         if let window = windows.first {

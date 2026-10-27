@@ -5,6 +5,7 @@ Native Swift/AppKit taskbar for macOS 14+. The default runtime now displays one 
 Open `WMac.xcodeproj` in Xcode and run the shared **WMac** scheme, or use:
 
 ```sh
+./scripts/setup-dev-signing.sh # once per Mac
 ./scripts/build.sh Debug
 open .build/products/Debug/WMac.app
 ./scripts/test.sh
@@ -13,6 +14,24 @@ open .build/products/Debug/WMac.app
 ```
 
 Xcode with its macOS SDK and command line tools is required. The project has Debug/Release configurations, macOS 14.0 deployment, Swift 6, and universal arm64/x86_64 builds. The build command produces local development products. For a GitHub Releases DMG, use the release preparation command below; it builds only the shipping target in an isolated directory and applies an ad-hoc signature with Hardened Runtime.
+
+## Local Debug signing and Accessibility
+
+Run `./scripts/setup-dev-signing.sh` once on each development Mac before building Debug or using Xcode Run. It reuses a valid Apple Development identity when one is available. Otherwise it creates one self-signed Code Signing identity, imports its non-extractable private key into the default user Keychain, and reuses that identity on later runs. The self-signed identity is not added to system trust; it is used for local code identity only. Temporary key and certificate files are removed. The script writes only the certificate fingerprint to the root `LocalSigning.xcconfig`, which Git ignores. It never creates a certificate during a build. If the certificate expires or is removed, Debug builds stop with an error until the local signing setup is repaired.
+
+The shared WMac Xcode scheme and `./scripts/build.sh Debug` use the same Debug configuration and signing identity. Xcode runs from its DerivedData product directory; the CLI opens `.build/products/Debug/WMac.app`. Both keep the stable `app.wmac.WMac` bundle ID and the same code identity, so the product keeps a stable designated requirement across source edits and builds. Xcode Debug disables its auxiliary debug dylib: with a self-signed identity that has no Apple Team ID, macOS library validation rejects that dylib at launch. The ordinary executable remains Hardened Runtime signed and LLDB attach is enabled by the Debug-only entitlement. Choose either path for development; after the first launch, approve WMac once under System Settings → Privacy & Security → Accessibility when macOS asks or when you enable its listed entry manually. The app must be re-approved if its signing identity changes. No script grants or resets TCC permissions.
+
+`./scripts/test.sh --require-ax` checks Accessibility from the signed `WMacProbe` executable, not from WMac.app. It prints the probe's actual designated requirement so you can identify the caller macOS is checking; System Settings may list WMacProbe or its responsible Terminal/host. That test does not prove WMac.app has a grant. `--require-no-ax` likewise checks the probe's actual process and exits `3` when that process is already trusted.
+
+For TCC diagnosis, compare the current signature and designated requirement before and after a rebuild:
+
+```sh
+security find-identity -p codesigning
+codesign --verify --deep --strict .build/products/Debug/WMac.app
+codesign -d -r - .build/products/Debug/WMac.app
+```
+
+The `-v` form lists Apple-valid identities. The local self-signed identity may instead appear in the command above with `CSSMERR_TP_NOT_TRUSTED`; that is expected because setup does not change system trust. Also confirm the current WMac and WMacProbe entries under Privacy & Security → Accessibility. A changed or unavailable identity is a signing configuration issue; an unchecked entry needs the user's ordinary confirmation. Do not edit TCC storage directly. Avoid resetting permissions unless a specific test requires it and the user has been warned.
 
 Click a running button to switch to its exact process and last available active window. Shift-click or middle-click requests an independent process of the exact application URL. Right-click for windows and process actions; force termination requires confirmation. Idle pins use ordinary launch. Drop GUI `.app` bundles from Finder onto a panel to pin them; drag pinned buttons to persist their order. Process menus offer Pin/Unpin. The WMac menu’s Pinned applications submenu also offers Unpin and Move left/right, plus a native replacement picker for missing apps. Failed storage preserves the original file and visible state; use Retry pins after correcting access or restoring a valid file. The left Applications button opens a native searchable catalog. Type a name, use Up/Down and Enter to open the exact selected bundle, Escape to dismiss, or Tab into results and Shift-F10 (or right-click) → Pin. The list refreshes asynchronously on opening and through Refresh; loading, empty and no-match states are explicit. Search works for unpinned applications too. Orange indicators and accessible pending counts track independent requests; error/unconfirmed details are available in the WMac menu. Menu bar and panel controls provide Settings (Cmd-comma), manual hide/show, instructions, permission status/settings, Dock settings and Quit. Closing an information window leaves this route available. Reopening WMac also restores hidden panels.
 

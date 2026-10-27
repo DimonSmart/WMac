@@ -103,7 +103,7 @@ func tr(_ en: String, _ ru: String) -> String {
             Task {
                 let data = await icons.icon(definition)
                 loading.remove(definition)
-                if let data, definitions.contains(definition) { let image = NSImage(data: data); image?.size = NSSize(width: 28, height: 28); images[definition] = image }
+                if let data, definitions.contains(definition) { images[definition] = NSImage(data: data) }
                 displays.render(coordinator.snapshot)
             }
         }
@@ -337,9 +337,9 @@ private struct MenuCommand { let capture: ButtonCapture; let action: String; let
 /// Bounded, background icon rasterization. No system icon/filesystem calls in refresh rendering.
 private actor PanelIcons {
     func icon(_ definition: AppDefinition) -> Data? {
-        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 64, pixelsHigh: 64, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 96, pixelsHigh: 96, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
         NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
-        NSWorkspace.shared.icon(forFile: definition.url.path).draw(in: NSRect(x: 0, y: 0, width: 64, height: 64))
+        NSWorkspace.shared.icon(forFile: definition.url.path).draw(in: NSRect(x: 0, y: 0, width: 96, height: 96))
         NSGraphicsContext.restoreGraphicsState(); return bitmap.representation(using: .png, properties: [:])
     }
 }
@@ -401,6 +401,7 @@ private actor PanelIcons {
     let next = NSButton(title: "›", target: nil, action: nil)
     private let backdrop = NSVisualEffectView()
     private var buttons: [TaskbarButtonID: ProcessButton] = [:]
+    private var applicationItemPitch: CGFloat = 44
     func applyOpacity(_ opacity: Double) {
         // Tint the backing material only; text, icons and hit targets stay opaque.
         backdrop.alphaValue = opacity
@@ -428,14 +429,17 @@ private actor PanelIcons {
     func render(_ snapshot: TaskbarSnapshot) {
         let ids = Set(snapshot.buttons.map(\.id))
         for (id, button) in buttons where !ids.contains(id) { button.removeFromSuperview(); buttons[id] = nil }
+        let iconSize = min(CGFloat(44), max(CGFloat(28), 28 + (bounds.height - 40) * CGFloat(2) / CGFloat(3)))
+        let buttonWidth = max(CGFloat(36), iconSize + 4)
+        applicationItemPitch = max(44, buttonWidth + 4)
         for (index, value) in snapshot.buttons.enumerated() {
             let button = buttons[value.id] ?? ProcessButton(runtime: runtime)
             buttons[value.id] = button; if button.superview == nil { content.addSubview(button) }
-            button.update(value)
             let targetHeight = max(36, bounds.height - 8)
-            button.frame = NSRect(x: CGFloat(index) * 44, y: max(0, (bounds.height - 4 - targetHeight) / 2), width: 40, height: targetHeight)
+            button.frame = NSRect(x: CGFloat(index) * applicationItemPitch, y: max(0, (bounds.height - 4 - targetHeight) / 2), width: buttonWidth, height: targetHeight)
+            button.update(value, iconSize: iconSize)
         }
-        content.setFrameSize(NSSize(width: CGFloat(snapshot.buttons.count) * 44, height: max(36, bounds.height - 4)))
+        content.setFrameSize(NSSize(width: CGFloat(snapshot.buttons.count) * applicationItemPitch, height: max(36, bounds.height - 4)))
         let format = DateFormatter(); format.dateStyle = .short; format.timeStyle = .short
         clock.stringValue = format.string(from: Date()).replacingOccurrences(of: ", ", with: "\n")
         place()
@@ -462,14 +466,14 @@ private actor PanelIcons {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         if dragOperation(sender) == .move, let source = sender.draggingSource as? ProcessButton, let id = source.draggedPin {
             let point = content.convert(sender.draggingLocation, from: nil)
-            runtime.movePin(id, to: Int(max(0, point.x) / 44)); return true
+            runtime.movePin(id, to: Int(max(0, point.x) / applicationItemPitch)); return true
         }
         let urls = droppedURLs(sender)
         guard !urls.isEmpty else { return false }
         runtime.dropApplications(urls); return true
     }
-    @objc private func back() { move(-176) }
-    @objc private func forward() { move(176) }
+    @objc private func back() { move(-applicationItemPitch * 4) }
+    @objc private func forward() { move(applicationItemPitch * 4) }
     private func move(_ distance: CGFloat) {
         // Immediate scrolling respects Reduce Motion without an animation branch.
         let x = min(max(0, content.frame.width - scroll.contentSize.width), max(0, scroll.contentView.bounds.minX + distance))
@@ -483,6 +487,8 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
 @MainActor private final class ProcessButton: NSButton, NSDraggingSource {
     unowned let runtime: TaskbarDelegate
     private var capture: ButtonCapture?
+    private var iconSource: NSImage?
+    private var displayedIconSize: CGFloat = 0
     private(set) var draggedPin: UUID?
     init(runtime: TaskbarDelegate) {
         self.runtime = runtime; super.init(frame: .zero)
@@ -492,8 +498,14 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
         setAccessibilityCustomActions([NSAccessibilityCustomAction(name: tr("Show actions", "Показать действия"), handler: { [weak self] in self?.accessibilityPerformShowMenu() ?? false })])
     }
     required init?(coder: NSCoder) { fatalError() }
-    func update(_ value: TaskbarButton) {
-        capture = ButtonCapture(value); image = runtime.image(value.application)
+    func update(_ value: TaskbarButton, iconSize: CGFloat) {
+        capture = ButtonCapture(value)
+        let source = runtime.image(value.application)
+        if source !== iconSource || displayedIconSize != iconSize {
+            let resized = source?.copy() as? NSImage
+            resized?.size = NSSize(width: iconSize, height: iconSize)
+            image = resized; iconSource = source; displayedIconSize = iconSize
+        }
         let pending = runtime.pendingCount(value.application)
         let label = (value.availability == .missing ? tr("Application not found: ", "Приложение не найдено: ") : "") + value.name + (value.ordinal.map { tr(" — instance \($0)", " — экземпляр \($0)") } ?? "") + (value.instance.map { " — PID \($0.id.pid)" } ?? "")
         toolTip = label + (runtime.windowTitle(value.instance?.id).map { " — " + $0 } ?? "") + (pending > 0 ? tr(" — pending: \(pending)", " — ожидание: \(pending)") : "")
@@ -508,7 +520,7 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
             let pending = runtime.pendingCount(capture.application)
             if capture.instance != nil || pending > 0 {
                 (pending > 0 ? NSColor.systemOrange : NSColor.controlAccentColor).setFill()
-                NSBezierPath(roundedRect: NSRect(x: 15, y: isFlipped ? bounds.maxY - 4 : 1, width: 10, height: 3), xRadius: 1.5, yRadius: 1.5).fill()
+                NSBezierPath(roundedRect: NSRect(x: bounds.midX - 5, y: isFlipped ? bounds.maxY - 4 : 1, width: 10, height: 3), xRadius: 1.5, yRadius: 1.5).fill()
             }
         }
     }

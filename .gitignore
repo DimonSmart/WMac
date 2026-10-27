@@ -9,6 +9,8 @@ xcuserdata/
 *.xccheckout
 *.moved-aside
 *.hmap
+/LocalSigning.xcconfig
+/.LocalSigning.xcconfig.*
 
 # macOS
 .DS_Store

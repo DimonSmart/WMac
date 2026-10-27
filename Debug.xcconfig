@@ -1,0 +1,5 @@
+// The local identity is generated once by scripts/setup-dev-signing.sh.
+// Keep a failing sentinel here so Debug never silently falls back to ad-hoc.
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = WMAC_LOCAL_SIGNING_SETUP_REQUIRED
+#include? "LocalSigning.xcconfig"
