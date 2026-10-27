@@ -403,6 +403,7 @@ private final class WindowPreviewView: NSView {
         for (index, card) in cards.enumerated() { card.frame.origin = NSPoint(x: CGFloat(index) * 240 + 4, y: 4) }
         strip.setFrameSize(NSSize(width: CGFloat(max(cards.count, 1)) * 240, height: 198))
         header.stringValue = name + " — " + String(cards.count)
+        info.stringValue = cards.isEmpty ? tr("No manageable windows", "Нет управляемых окон") : ""
         return staleAssociation
     }
     func focus(direction: Int, in panel: NSWindow) {
@@ -431,7 +432,7 @@ private final class WindowPreviewView: NSView {
 
 @MainActor
 private final class WindowThumbnailService {
-    private struct Key: Hashable { let instance: InstanceID; let window: UUID; let graphics: CGWindowID }
+    private struct Key: Hashable { let instance: InstanceID; let window: UUID; let graphics: CGWindowID; let frame: [Int] }
     private struct Entry { let image: NSImage; let date: Date; let bytes: Int }
     private var cache: [Key: Entry] = [:]
     private var activeCaptures = 0
@@ -465,7 +466,10 @@ private final class WindowThumbnailService {
             guard !Task.isCancelled, stillCurrent() else { return }
             guard case .matched(let graphicsID) = associations[window.id],
                   let source = available.first(where: { $0.windowID == graphicsID }) else { continue }
-            let key = Key(instance: instance, window: window.id, graphics: graphicsID)
+            let frame = source.frame
+            let key = Key(instance: instance, window: window.id, graphics: graphicsID,
+                          frame: [Int(frame.minX.rounded()), Int(frame.minY.rounded()),
+                                  Int(frame.width.rounded()), Int(frame.height.rounded())])
             if let saved = cache[key], Date().timeIntervalSince(saved.date) < 10 {
                 onImage(window.id, saved.image, true)
             }
