@@ -54,6 +54,27 @@ private final class FakeDockBackend: SystemDockPreferencesBackend {
     check(conflicts == ["autohide-delay"] && backend.values["autohide-delay"] == external,
           "external preference changes win over the original snapshot")
 
+    // A crash before writes begin must never undo a concurrent user change.
+    var prepared = snapshot()
+    prepared.phase = "prepared"
+    for entry in records { backend.values[entry.key] = entry.applied }
+    let beforePrepared = backend.writes
+    try SystemDockRecovery.save(prepared, to: stateURL)
+    _ = try SystemDockRecovery.restore(stateURL, backend: backend)
+    check(backend.writes == beforePrepared && !fm.fileExists(atPath: stateURL.path),
+          "prepared-only transactions discard their snapshot without changing preferences")
+
+    // A write failure must leave enough evidence to retry the partial restore.
+    try SystemDockRecovery.save(snapshot(), to: stateURL)
+    backend.failOnWrite = "autohide-delay"
+    do { _ = try SystemDockRecovery.restore(stateURL, backend: backend); check(false, "partial restore fails") }
+    catch { check(fm.fileExists(atPath: stateURL.path), "partial restoration keeps its snapshot") }
+    backend.failOnWrite = nil
+    let retry = try SystemDockRecovery.restore(stateURL, backend: backend)
+    check(retry.isEmpty && backend.values["autohide"] == records[0].original &&
+          backend.values["autohide-delay"] == nil,
+          "partial restoration can be resumed without clobbering completed keys")
+
     try Data("corrupt".utf8).write(to: stateURL)
     let count = backend.writes
     do { _ = try SystemDockRecovery.restore(stateURL, backend: backend); check(false, "corrupt state rejected") }
