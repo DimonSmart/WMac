@@ -8,6 +8,7 @@ struct WindowReference: Identifiable, Equatable, Sendable {
     let isMinimized: Bool
     let isFocused: Bool
     let canMinimize: Bool
+    var frame: CGRect? = nil
 }
 enum WindowResult: Sendable {
     case windows([WindowReference])
@@ -49,6 +50,7 @@ struct AXWindowValue: @unchecked Sendable {
     let minimized: Bool
     let focused: Bool
     let canMinimize: Bool
+    var frame: CGRect? = nil
 }
 struct AccessibilityBoundary: Sendable {
     var observesWindows = true
@@ -93,8 +95,21 @@ struct AccessibilityBoundary: Sendable {
                       AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role) == .success,
                       role as? String == kAXWindowRole else { continue }
             }
+            var positionValue: CFTypeRef?, sizeValue: CFTypeRef?
+            var frame: CGRect?
+            if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue) == .success,
+               AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
+               let originAX = positionValue as! AXValue?, let sizeAX = sizeValue as! AXValue? {
+                var origin = CGPoint.zero
+                var size = CGSize.zero
+                if AXValueGetValue(originAX, .cgPoint, &origin), AXValueGetValue(sizeAX, .cgSize, &size),
+                   origin.x.isFinite, origin.y.isFinite, size.width.isFinite, size.height.isFinite,
+                   size.width > 0, size.height > 0 {
+                    frame = CGRect(origin: origin, size: size)
+                }
+            }
             windows.append(AXWindowValue(element: element, title: title as? String ?? "Window", minimized: minimized as? Bool ?? false,
-                                         focused: focused.map { CFEqual($0, element) } ?? false, canMinimize: settable.boolValue))
+                                         focused: focused.map { CFEqual($0, element) } ?? false, canMinimize: settable.boolValue, frame: frame))
         }
         return .success(windows)
     }
@@ -189,7 +204,7 @@ final class AccessibilityService: @unchecked Sendable {
             state.records = values.map { value in
                 let key = state.records.first { CFEqual($0.element, value.element) }?.snapshot.id ?? UUID()
                 return Record(snapshot: WindowReference(id: key, instance: id, title: value.title, isMinimized: value.minimized,
-                                                       isFocused: value.focused, canMinimize: value.canMinimize), element: value.element)
+                                                       isFocused: value.focused, canMinimize: value.canMinimize, frame: value.frame), element: value.element)
             }
             let keys = Set(state.records.map { $0.snapshot.id })
             if let last = state.lastActive, !keys.contains(last) { state.lastActive = nil }
@@ -271,7 +286,10 @@ final class AccessibilityService: @unchecked Sendable {
                                                        message: minimize ? "Minimized the focused window." : "Restored and raised the selected window."))
             }
         }
-        // Even unavailable AX targets retain lifetime-validated process switching.
+        // An explicit window selection must never fall back to activating an arbitrary window.
+        if selected != nil && prepared.outcome != .restored {
+            return WindowActionResult(outcome: .unavailable, message: prepared.message, activationAccepted: false)
+        }
         let activated = await boundary.activate(id)
         let outcome: WindowActionResult.Outcome = activated ? prepared.outcome : .unavailable
         return WindowActionResult(outcome: outcome, message: prepared.message + (activated ? "" : " Process activation was rejected."), activationAccepted: activated)
