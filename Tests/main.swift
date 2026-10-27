@@ -225,6 +225,7 @@ check(AccessibilityPermissionStatus(trusted: false).explanation.contains("Proces
 try await testApplicationCatalog(check)
 try await testPinMutations(check)
 try await testSettings(check)
+try testSystemDockRecovery(check)
 let primaryLayout = DisplayLayout(id: 1, frame: CGRect(x: 0, y: 0, width: 1440, height: 900))
 let leftLayout = DisplayLayout(id: 2, frame: CGRect(x: -1920, y: -200, width: 1920, height: 1080))
 check(primaryLayout.panelFrame == CGRect(x: 8, y: 8, width: 1424, height: 52), "default panel geometry is 52pt with screen-relative insets")
