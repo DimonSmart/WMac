@@ -30,7 +30,7 @@ import Foundation
     let v2 = try await store.load()
     check(!v2.hideSystemDock, "v2 migrates with Dock hiding opt-in disabled")
     check(try JSONDecoder().decode(SettingsStore.Document.self, from: Data(contentsOf: url)).version == 4, "v2 migration commits schema v4")
-    try Data("{\\"version\\":3,\\"settings\\":{\\"allDisplays\\":false,\\"height\\":52,\\"opacity\\":0.85}}".utf8).write(to: url)
+    try Data(#"{"version":3,"settings":{"allDisplays":false,"height":52,"opacity":0.85}}"#.utf8).write(to: url)
     let v3 = try await store.load()
     check(!v3.allDisplays && v3.hoverPreviews == .automatic && v3.showWindowThumbnails && v3.appPreviewPreferences.isEmpty, "v3 migration defaults preserve existing settings")
     check(try JSONDecoder().decode(SettingsStore.Document.self, from: Data(contentsOf: url)).version == 4, "v3 migration commits schema v4")
