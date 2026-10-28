@@ -50,7 +50,11 @@ struct ApplicationCatalogScanner: Sendable {
                 return
             }
             guard values.isPackage != true,
-                  let children = try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return }
+                  // Do not use .skipsHiddenFiles here: macOS marks some system app
+                  // symlinks (including /Applications/Safari.app) hidden even when
+                  // the resolved application bundle is visible. The resolved URL's
+                  // isHidden value is checked above, after following the symlink.
+                  let children = try? fm.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
             for child in children { inspect(child, depth: depth + 1) }
         }
         for root in roots { inspect(root, depth: 0) }
