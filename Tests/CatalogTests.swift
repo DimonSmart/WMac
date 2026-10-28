@@ -25,7 +25,7 @@ import AppKit
     let first = try bundle("Applications/Vendor/First.app", extra: ["CFBundleDisplayName": "English Name"], localized: ["CFBundleDisplayName": "Ёлка Редактор"])
     let second = try bundle("Applications/Other.app", extra: ["CFBundleName": "Café Editor"])
     let fallback = try bundle("Applications/Filename.app", id: "test.fallback", extra: ["CFBundleDisplayName": "  "])
-    try bundle("Applications/Agent.app", extra: ["LSUIElement": true])
+    let agent = try bundle("Applications/Agent.app", extra: ["LSUIElement": true])
     try bundle("Applications/Background.app", extra: ["LSBackgroundOnly": "YES"])
     let malformed = try bundle("Applications/Malformed.app", extra: ["CFBundleExecutable": "missing"])
     try bundle("Applications/Broken.app", extra: ["CFBundleIdentifier": ""])
@@ -43,13 +43,17 @@ import AppKit
     var publications = 0
     catalog.changed = { _ in publications += 1 }
     await catalog.refresh(supplementalURLs: [first, helper, supplemental, malformed])
-    check(publications == 1 && catalog.snapshot.count == 4, "catalog publishes one immutable snapshot; nested discovery, missing roots, malformed/background apps and embedded helpers handled")
-    check(Set(catalog.snapshot.map(\.definition)) == Set([AppDefinition(url: first, bundleID: "test.catalog.shared"), AppDefinition(url: second, bundleID: "test.catalog.shared"), AppDefinition(url: fallback, bundleID: "test.fallback"), AppDefinition(url: supplemental, bundleID: "test.extra")]), "catalog canonical paths deduplicate aliases while same bundle ID at distinct paths remains selectable")
+    check(publications == 1 && catalog.snapshot.count == 5, "catalog publishes one immutable snapshot; nested discovery, menu-bar apps, missing roots, malformed/background apps and embedded helpers handled")
+    check(Set(catalog.snapshot.map(\.definition)) == Set([AppDefinition(url: first, bundleID: "test.catalog.shared"), AppDefinition(url: second, bundleID: "test.catalog.shared"), AppDefinition(url: fallback, bundleID: "test.fallback"), AppDefinition(url: agent, bundleID: "test.catalog.shared"), AppDefinition(url: supplemental, bundleID: "test.extra")]), "catalog canonical paths deduplicate aliases while same bundle ID at distinct paths remains selectable")
+    check(catalog.snapshot.first { $0.definition.url == agent }?.isMenuBarOnly == true, "menu-bar app is classified for launch-only behavior")
+    let pinStore = PinStore(url: directory.appendingPathComponent("pins.json"))
+    let menuBarPin = await pinStore.prepare(url: agent)
+    check(menuBarPin == nil, "menu-bar apps are available to launch but remain ineligible for Finder pin preparation")
     check(catalog.snapshot.first { $0.definition.url == first }?.name == "Ёлка Редактор", "catalog prefers localized display name")
     check(catalog.snapshot.first { $0.definition.url == second }?.name == "Café Editor" && catalog.snapshot.first { $0.definition.url == fallback }?.name == "Filename", "catalog falls back through bundle name to filename")
     check(catalog.search("елка РЕД").map(\.definition.url) == [first], "Russian search ignores case and diacritics and matches multiple terms")
     check(catalog.search("CAFE editor").map(\.definition.url) == [second] && catalog.search("absent").isEmpty, "English name search handles diacritics and empty results")
-    check(catalog.search("  ").count == 4 && catalog.snapshot.allSatisfy { $0.icon.size.width > 0 }, "empty search returns all apps with usable system icon fallbacks")
+    check(catalog.search("  ").count == 5 && catalog.snapshot.allSatisfy { $0.icon.size.width > 0 }, "empty search returns all apps including menu-bar apps with usable system icon fallbacks")
     check(catalog.snapshot.allSatisfy { entry in
         guard let data = entry.iconData, let bitmap = NSBitmapImageRep(data: data) else { return false }
         return bitmap.pixelsWide == 64 && bitmap.pixelsHigh == 64
@@ -59,7 +63,7 @@ import AppKit
     search.beginRefresh()
     check(search.content == .loading, "first asynchronous scan has a loading state")
     search.receive(catalog.snapshot)
-    check(search.content == .results && search.selection != nil, "published applications populate search")
+    check(search.content == .results && search.selection != nil && search.applications.contains(where: { $0.isMenuBarOnly }), "published applications populate search, including menu-bar apps")
     let secondDefinition = AppDefinition(url: second, bundleID: "test.catalog.shared")
     search.select(row: search.results.firstIndex { $0.definition == secondDefinition }!)
     check(search.selection?.definition == secondDefinition, "search selection preserves exact same-bundle-ID path")
@@ -85,5 +89,5 @@ import AppKit
     check(publications == beforeCancellation + 1, "overlapping catalog refreshes publish only the latest generation")
     try fm.removeItem(at: second)
     await catalog.refresh()
-    check(catalog.snapshot.count == 2 && !catalog.snapshot.contains { $0.definition.url == second }, "catalog refresh removes vanished bundles and previous supplemental entries")
+    check(catalog.snapshot.count == 3 && !catalog.snapshot.contains { $0.definition.url == second }, "catalog refresh removes vanished bundles and previous supplemental entries while retaining menu-bar apps")
 }

@@ -59,6 +59,7 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
     func description(_ result: LaunchResult) -> String {
         switch result {
         case .success(let instance): return "success PID \(instance.id.pid)"
+        case .accessorySuccess(let pid): return "accessory success PID \(pid)"
         case .error(let message): return "error: \(message)"
         case .unconfirmed(let message): return "unconfirmed: \(message)"
         }
@@ -66,6 +67,7 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
     func confirmed(_ result: LaunchResult, _ label: String) -> Instance? {
         switch result {
         case .success(let instance): print("SUCCESS \(label) pid=\(instance.id.pid) launch=\(instance.id.launchDate)"); owned.append(instance); return instance
+        case .accessorySuccess(let pid): print("ERROR \(label) expected taskbar instance, got menu-bar PID \(pid)"); return nil
         case .error(let message): print("ERROR \(label): \(message)"); return nil
         case .unconfirmed(let message): print("UNCONFIRMED \(label): \(message)"); return nil
         }
@@ -147,7 +149,8 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
                         check(remaining.count == 1 && !remaining.contains(where: { $0.id == other.id }), "destroyed window disappears from snapshot")
                     } else { check(false, "surviving window remains enumerable") }
                     let vanished = await ax.select(other)
-                    check(vanished.outcome == .activatedOnly && vanished.activationAccepted, "vanished real window returns explanatory process fallback")
+                    check(vanished.outcome == .unavailable && !vanished.activationAccepted,
+                          "vanished explicit window selection never activates an arbitrary fallback window")
                 }
             }
         }

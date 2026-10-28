@@ -5,6 +5,7 @@ struct CatalogApplication: Identifiable, Sendable {
     let definition: AppDefinition
     let name: String
     let iconData: Data?
+    let isMenuBarOnly: Bool
     var id: AppDefinition { definition }
 
     @MainActor var icon: NSImage {
@@ -67,7 +68,7 @@ struct ApplicationCatalogScanner: Sendable {
               let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
               info["CFBundlePackageType"] as? String == "APPL",
               let bundleID = nonempty(info["CFBundleIdentifier"]), !excludedBundleIDs.contains(bundleID),
-              !flag(info["LSUIElement"]), !flag(info["LSBackgroundOnly"]),
+              !flag(info["LSBackgroundOnly"]),
               let executable = nonempty(info["CFBundleExecutable"]),
               !executable.contains("/"), executable != ".", executable != "..",
               FileManager.default.isExecutableFile(atPath: contents.appendingPathComponent("MacOS").appendingPathComponent(executable).path) else { return nil }
@@ -87,7 +88,7 @@ struct ApplicationCatalogScanner: Sendable {
             ?? nonempty(localized["CFBundleName"]) ?? nonempty(info["CFBundleName"])
             ?? url.deletingPathExtension().lastPathComponent
         return CatalogApplication(definition: AppDefinition(url: url, bundleID: bundleID), name: name,
-                                  iconData: iconData(at: url))
+                                  iconData: iconData(at: url), isMenuBarOnly: flag(info["LSUIElement"]))
     }
 
     private func iconData(at url: URL) -> Data? {

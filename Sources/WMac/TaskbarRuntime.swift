@@ -184,6 +184,9 @@ func tr(_ en: String, _ ru: String) -> String {
                 notify(tr("Application is running without an open window", "Приложение работает без открытых окон"),
                        tr("The application did not create a window after the reopen request.", "Приложение не создало окно после запроса на повторное открытие."))
             }
+        case .accessorySuccess(let pid):
+            notify(tr("Menu-bar app is running", "Приложение строки меню запущено"),
+                   tr("PID \(pid) is not shown as a taskbar button.", "PID \(pid) не отображается кнопкой на панели."))
         case .error(let reason):
             notify(tr("Could not reopen application", "Не удалось повторно открыть приложение"), reason)
         case .unconfirmed(let reason):
@@ -201,6 +204,9 @@ func tr(_ en: String, _ ru: String) -> String {
             pending[definition, default: 1] -= 1
             switch result {
             case .success: notify(tr("Launch confirmed", "Запуск подтверждён"))
+            case .accessorySuccess(let pid):
+                notify(tr("Launch confirmed", "Запуск подтверждён"),
+                       tr("Menu-bar app is running as PID \(pid); it is not shown as a taskbar button.", "Приложение строки меню работает как PID \(pid); оно не отображается кнопкой на панели."))
             case .error(let reason): notify(tr("Launch error", "Ошибка запуска"), reason)
             case .unconfirmed(let reason): notify(tr("Launch unconfirmed", "Не удалось подтвердить запуск"), reason)
             }
@@ -209,6 +215,10 @@ func tr(_ en: String, _ ru: String) -> String {
     }
     func showApplications(from button: NSButton) { applicationSearch.show(from: button) }
     func pinApplication(_ application: CatalogApplication) {
+        guard !application.isMenuBarOnly else {
+            notify(tr("Menu-bar apps cannot be pinned", "Приложения строки меню нельзя закрепить"))
+            return
+        }
         pinMutations.submit(.add(application.definition, application.name))
     }
     func dropApplications(_ urls: [URL]) { pinMutations.submit(.drop(urls)) }
@@ -818,7 +828,11 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
         // Freeze the exact definition while a menu is tracking; refresh cannot retarget it.
         let menuSelection = state.results[row]
         let menu = NSMenu()
-        let item = NSMenuItem(title: tr("Pin", "Закрепить"), action: #selector(pinSelection), keyEquivalent: "")
+        let title = menuSelection.isMenuBarOnly
+            ? tr("Menu-bar apps cannot be pinned", "Приложения строки меню нельзя закрепить")
+            : tr("Pin", "Закрепить")
+        let item = NSMenuItem(title: title, action: #selector(pinSelection), keyEquivalent: "")
+        item.isEnabled = !menuSelection.isMenuBarOnly
         item.target = self; item.representedObject = menuSelection
         menu.addItem(item); return menu
     }

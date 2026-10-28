@@ -2,6 +2,7 @@ import AppKit
 
 enum LaunchResult {
     case success(Instance)
+    case accessorySuccess(pid: pid_t)
     case error(String)
     case unconfirmed(String)
 }
@@ -30,6 +31,12 @@ final class LaunchService {
                 if let app = callback.app, definition.matches(app),
                    let instance = monitor.instances(of: definition).first(where: { $0.id.pid == app.processIdentifier }),
                    monitor.running(instance.id) != nil { return .success(instance) }
+                if let app = callback.app, definition.matches(app), app.activationPolicy == .accessory,
+                   let live = NSRunningApplication(processIdentifier: app.processIdentifier),
+                   definition.matches(live), !live.isTerminated, live.isFinishedLaunching,
+                   live.launchDate == app.launchDate, live.activationPolicy == .accessory {
+                    return .accessorySuccess(pid: live.processIdentifier)
+                }
             }
             try? await Task.sleep(for: .milliseconds(100))
         }

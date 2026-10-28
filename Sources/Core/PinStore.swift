@@ -51,7 +51,8 @@ actor PinStore {
         var scanner = ApplicationCatalogScanner()
         scanner.roots = []
         guard url.isFileURL, url.pathExtension.lowercased() == "app",
-              let application = scanner.scan(supplementalURLs: [url]).first else { return nil }
+              let application = scanner.scan(supplementalURLs: [url]).first,
+              !application.isMenuBarOnly else { return nil }
         return prepare(application: application.definition, name: application.name)
     }
     func prepare(application: AppDefinition, name: String, id: UUID = UUID()) -> ResolvedPin {
