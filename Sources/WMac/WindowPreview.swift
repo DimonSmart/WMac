@@ -209,11 +209,19 @@ final class WindowPreviewController {
     }
 
     private func place(size: NSSize, near button: NSView?) -> NSRect {
-        var point = NSEvent.mouseLocation
         if let button, let window = button.window {
-            let top = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.maxY), to: nil)
-            point = window.convertPoint(toScreen: top)
+            let buttonRect = window.convertToScreen(button.convert(button.bounds, to: nil))
+            let screen = window.screen ?? NSScreen.screens.first(where: { $0.frame.intersects(buttonRect) }) ?? NSScreen.main
+            let bounds = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1024, height: 768)
+            let margin: CGFloat = 8
+            let gap: CGFloat = 8
+            let width = min(size.width, max(1, bounds.width - 20))
+            let y = buttonRect.maxY + gap
+            let height = min(size.height, max(0, bounds.maxY - margin - y))
+            let x = max(bounds.minX + 10, min(buttonRect.midX - width / 2, bounds.maxX - width - 10))
+            return NSRect(x: x, y: y, width: width, height: height)
         }
+        let point = NSEvent.mouseLocation
         let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) ?? NSScreen.main
         let bounds = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1024, height: 768)
         let width = min(size.width, max(260, bounds.width - 20))
