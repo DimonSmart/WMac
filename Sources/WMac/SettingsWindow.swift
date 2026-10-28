@@ -117,8 +117,8 @@ import ServiceManagement
         previews.addArrangedSubview(text(tr("Show window cards after hovering over a running instance for 450 ms.", "Показывать карточки окон спустя 450 мс наведения на запущенный экземпляр.")))
         let hover = NSPopUpButton()
         hover.identifier = NSUserInterfaceItemIdentifier("hoverPreviews")
-        hover.addItems(withTitles: [tr("Automatic (2+ windows)", "Автоматически (2+ окна)"), tr("Always (1+ windows)", "Всегда (1+ окно)"), tr("Disabled", "Отключено")])
-        hover.selectItem(at: HoverPreviewMode.allCases.firstIndex(of: value.hoverPreviews) ?? 0)
+        hover.addItems(withTitles: [tr("Automatic (1+ windows)", "Автоматически (1+ окно)"), tr("Disabled", "Отключено")])
+        hover.selectItem(at: HoverPreviewMode.selectableCases.firstIndex(of: value.hoverPreviews) ?? 0)
         hover.target = self; hover.action = #selector(hoverChanged(_:))
         hover.isEnabled = runtime.settings.ready
         hover.setAccessibilityLabel(tr("Hover previews", "Предпросмотр при наведении"))
@@ -182,8 +182,8 @@ import ServiceManagement
         }
     }
     @objc private func hoverChanged(_ sender: NSPopUpButton) {
-        guard HoverPreviewMode.allCases.indices.contains(sender.indexOfSelectedItem) else { return }
-        let selected = HoverPreviewMode.allCases[sender.indexOfSelectedItem]
+        guard HoverPreviewMode.selectableCases.indices.contains(sender.indexOfSelectedItem) else { return }
+        let selected = HoverPreviewMode.selectableCases[sender.indexOfSelectedItem]
         runtime.settings.edit { $0.hoverPreviews = selected }
     }
     @objc private func appHoverChanged(_ sender: NSPopUpButton) {

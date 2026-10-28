@@ -1,6 +1,12 @@
 import Foundation
 
-enum HoverPreviewMode: String, Codable, CaseIterable, Sendable { case automatic, always, disabled }
+enum HoverPreviewMode: String, Codable, CaseIterable, Sendable {
+    case automatic, always, disabled
+
+    // Keep decoding the previous global Always value while omitting this now
+    // redundant choice from settings. Per-app Always overrides remain available.
+    static var selectableCases: [Self] { [.automatic, .disabled] }
+}
 enum AppHoverPreviewMode: String, Codable, CaseIterable, Sendable { case always, disabled }
 struct AppPreviewPreference: Codable, Equatable, Sendable {
     var application: AppDefinition
@@ -27,7 +33,7 @@ struct WMacSettings: Codable, Equatable, Sendable {
     }
     func shouldPreview(_ windowCount: Int, app: AppDefinition?) -> Bool {
         switch hoverMode(for: app) {
-        case .automatic: return windowCount >= 2
+        case .automatic: return windowCount >= 1
         case .always: return windowCount >= 1
         case .disabled: return false
         }

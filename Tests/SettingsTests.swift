@@ -9,9 +9,9 @@ import Foundation
     let store = SettingsStore(url: url)
     check(try await store.load() == WMacSettings(), "missing settings use sensible defaults")
     let defaultPreview = WMacSettings()
-    check(!defaultPreview.shouldPreview(0, app: nil) && !defaultPreview.shouldPreview(1, app: nil) &&
+    check(!defaultPreview.shouldPreview(0, app: nil) && defaultPreview.shouldPreview(1, app: nil) &&
           defaultPreview.shouldPreview(2, app: nil) && defaultPreview.showWindowThumbnails,
-          "automatic previews require two AX windows and thumbnails are opt-in by OS permission")
+          "automatic previews include one or more AX windows and thumbnails are opt-in by OS permission")
     var neverPreview = defaultPreview
     neverPreview.hoverPreviews = .disabled
     check(!neverPreview.shouldPreview(4, app: nil), "disabled hover never opens automatically")
@@ -42,7 +42,7 @@ import Foundation
     let v3 = try await store.load()
     check(!v3.allDisplays && v3.hoverPreviews == .automatic && v3.showWindowThumbnails && v3.appPreviewPreferences.isEmpty, "v3 migration defaults preserve existing settings")
     check(try JSONDecoder().decode(SettingsStore.Document.self, from: Data(contentsOf: url)).version == 4, "v3 migration commits schema v4")
-    check(!value.shouldPreview(4, app: b) && value.shouldPreview(1, app: a), "per-application override and always mode use definition identity")
+    check(!value.shouldPreview(4, app: b) && value.shouldPreview(1, app: a), "per-application override and legacy always setting use definition identity")
     for badBytes in [Data("broken".utf8), Data("{\"version\":999}".utf8)] {
         try badBytes.write(to: url)
         do { _ = try await store.load(); check(false, "bad settings rejected") } catch { check(try Data(contentsOf: url) == badBytes, "invalid/unsupported settings preserved for explicit recovery") }
