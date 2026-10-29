@@ -133,6 +133,12 @@ try await store.save([bookmarked])
 let mismatch = try await PinStore(url: storeURL, io: mismatchIO).load()
 check(mismatch.pins.first?.pin.application == a && mismatch.pins.first?.availability == .available, "bookmark pointing to different bundle identity cannot hijack pin")
 // Controlled AX boundary. No remote AX call or permission mutation occurs here.
+final class WindowUpdateCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var total = 0
+    func increment() { lock.withLock { total += 1 } }
+    var value: Int { lock.withLock { total } }
+}
 final class ControlledAX: @unchecked Sendable {
     let lock = NSLock()
     let first = AXUIElementCreateApplication(900001)
@@ -189,15 +195,19 @@ if case .windows(let initial) = await windowService.windows(for: windowInstance)
               initial.map(\.stateRevision) == repeated.map(\.stateRevision),
               "unchanged observations preserve both lifecycle and revision")
     }
+    let eventCounter = WindowUpdateCounter()
+    let listener = await windowService.listen(windowInstance) { eventCounter.increment() }
     controlled.edit { $0.readError = "Controlled timeout" }
     let unavailableSnapshot = await windowService.windows(for: windowInstance)
     if case .unavailable = unavailableSnapshot { check(true, "transient AX read has explicit unknown status") }
     else { check(false, "transient AX read must not be reported as zero windows") }
     let timedOut = await windowService.switchTo(windowInstance)
     check(timedOut.outcome == .activatedOnly && timedOut.message.contains("Controlled timeout"), "transient read failure reports process fallback with its reason")
+    check(eventCounter.value == 1, "transient AX unavailability emits one change event, not an empty window list")
     controlled.edit { $0.readError = nil }
     if case .windows(let recovered) = await windowService.windows(for: windowInstance) {
         check(recovered.map(\.id) == initial.map(\.id), "transient unreadability does not fabricate closure or change known AX identities")
+        check(eventCounter.value == 2, "AX recovery notifies subscribers without changing semantic window IDs")
     } else { check(false, "controlled timeout recovery") }
     let minimizeResult = await windowService.switchTo(windowInstance, minimizeIfActive: true, isActive: true)
     check(minimizeResult.outcome == .minimized, "toggle minimizes focused window")
@@ -235,6 +245,7 @@ if case .windows(let initial) = await windowService.windows(for: windowInstance)
     controlled.edit { $0.alive = true; $0.activation = false }
     let rejected = await windowService.switchTo(windowInstance)
     check(rejected.outcome == .unavailable && !rejected.activationAccepted, "activation rejection is observable even after AX action")
+    await windowService.stopListening(windowInstance, token: listener)
     check(controlled.lock.withLock { controlled.allCallsOffMain }, "all controlled enumeration/action calls execute off the main thread")
 } else { check(false, "controlled window snapshot must be available") }
 let previewOne = WindowReference(id: UUID(), instance: windowInstance, title: "Same", isMinimized: false, isFocused: true, canMinimize: true,
