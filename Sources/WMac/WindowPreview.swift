@@ -124,10 +124,13 @@ final class WindowPreviewController {
             windows = values
             information = values.isEmpty ? tr("No manageable windows", "Нет управляемых окон") : nil
             if !explicit && !runtime.settings.value.shouldPreview(values.count, app: capture.application) { return }
-        case .unavailable:
+        case .unavailable(let reason):
+            thumbnails.axUnavailable(instance: id, reason: reason)
             guard explicit else { return }
             windows = []
-            information = tr("Accessibility is required to enumerate windows.", "Для списка окон нужен Универсальный доступ.")
+            information = runtime.permissions.trusted
+                ? tr("Window list is temporarily unavailable.", "Список окон временно недоступен.")
+                : tr("Accessibility is required to enumerate windows.", "Для списка окон нужен Универсальный доступ.")
         }
 
         let target = runtime.coordinator.snapshot.buttons.first(where: { $0.id == capture.button })
@@ -212,8 +215,9 @@ final class WindowPreviewController {
                                                 axTrusted: self.runtime.permissions.trusted)
             }
             switch latest {
-            case .unavailable:
+            case .unavailable(let reason):
                 if !self.axTemporarilyUnavailable {
+                    self.thumbnails.axUnavailable(instance: id, reason: reason)
                     self.axTemporarilyUnavailable = true
                     self.generation = UUID()
                     self.imageTask?.cancel()
@@ -244,7 +248,7 @@ final class WindowPreviewController {
     }
 
     private func startImages(_ windows: [WindowReference], instance: InstanceID, capture: ButtonCapture, token: UUID) {
-        guard !windows.isEmpty, runtime.settings.value.showWindowThumbnails, CGPreflightScreenCaptureAccess() else { return }
+        guard !windows.isEmpty, runtime.settings.value.showWindowThumbnails else { return }
         imageTask?.cancel()
         imageTask = Task { [weak self] in
             guard let self else { return }
@@ -548,6 +552,10 @@ private final class WindowThumbnailService {
         logger.info("windowIdentity code=\(code, privacy: .public) \(identity, privacy: .public) candidates=\(String(describing: candidates), privacy: .public) \(detail, privacy: .public)")
     }
 
+    func axUnavailable(instance: InstanceID, reason: String) {
+        diagnose("axEnumerationUnavailable", detail: "pid=\(instance.pid) start=\(instance.startDate.timeIntervalSince1970) reason=\(reason)")
+    }
+
     private func acquire() async {
         if activeCaptures < 2 { activeCaptures += 1; return }
         await withCheckedContinuation { waiting.append($0) }
@@ -629,8 +637,10 @@ private final class WindowThumbnailService {
               onImage: @escaping @MainActor (WindowReference, NSImage, Bool) -> Void,
               onInvalidated: @escaping @MainActor (WindowReference) -> Void) async {
         guard CGPreflightScreenCaptureAccess() else {
-            diagnose("screenRecordingPermissionMissing", detail: "pid=\(instance.pid)")
-            for window in windows { onInvalidated(window) }
+            for window in windows {
+                diagnose("screenRecordingPermissionMissing", window: window)
+                onInvalidated(window)
+            }
             return
         }
         guard stillCurrent(), processIsCurrent(instance) else { return }

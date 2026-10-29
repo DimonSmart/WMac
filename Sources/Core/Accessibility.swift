@@ -103,13 +103,13 @@ struct AccessibilityBoundary: Sendable {
             AXUIElementSetMessagingTimeout(element, 0.5)
             var subrole: CFTypeRef?
             let subroleError = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
-            guard subroleError == .success else { return .failure(AXFailure(message: "Window state temporarily unavailable (AX \(subroleError.rawValue)).")) }
+            guard subroleError == .success else { return .failure(AXFailure(message: "Window subrole temporarily unavailable (AX \(subroleError.rawValue)).")) }
             guard subrole as? String == kAXStandardWindowSubrole || subrole as? String == kAXDialogSubrole else { continue }
             var title: CFTypeRef?, minimized: CFTypeRef?
             _ = AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &title)
             // An unreadable minimized attribute is not a reliable actionable window.
             let minimizedError = AXUIElementCopyAttributeValue(element, kAXMinimizedAttribute as CFString, &minimized)
-            guard minimizedError == .success else { return .failure(AXFailure(message: "Window state temporarily unavailable (AX \(minimizedError.rawValue)).")) }
+            guard minimizedError == .success else { return .failure(AXFailure(message: "Window minimized state temporarily unavailable (AX \(minimizedError.rawValue)).")) }
             var settable: DarwinBoolean = false
             _ = AXUIElementIsAttributeSettable(element, kAXMinimizedAttribute as CFString, &settable)
             // AppKit can expose minimized/restoring standard windows as
