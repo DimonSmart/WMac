@@ -88,8 +88,9 @@ final class WindowArrangementShortcuts {
         let operation = shortcut.operation
         guard let app = NSWorkspace.shared.frontmostApplication,
               app.processIdentifier != ProcessInfo.processInfo.processIdentifier,
-              app.activationPolicy == .regular, let launchDate = app.launchDate else { return }
-        let instance = InstanceID(pid: app.processIdentifier, launchDate: launchDate)
+              app.activationPolicy == .regular,
+              let startDate = ProcessLifetime.startDate(for: app) else { return }
+        let instance = InstanceID(pid: app.processIdentifier, startDate: startDate)
         guard accessibility.trusted else {
             if !permissionPrompted {
                 permissionPrompted = true

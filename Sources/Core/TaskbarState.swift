@@ -82,7 +82,7 @@ struct TaskbarSnapshot: Sendable {
     /// Revalidate this identity with ProcessMonitor immediately before performing an action.
     func instance(for button: TaskbarButtonID) -> InstanceID? { snapshot.buttons.first { $0.id == button }?.instance?.id }
     private static func earlier(_ a: Instance, _ b: Instance) -> Bool {
-        a.id.launchDate == b.id.launchDate ? a.id.pid < b.id.pid : a.id.launchDate < b.id.launchDate
+        a.id.startDate == b.id.startDate ? a.id.pid < b.id.pid : a.id.startDate < b.id.startDate
     }
     private func compose(preferActivePin: UUID? = nil) {
         let byID = Dictionary(uniqueKeysWithValues: instances.map { ($0.id, $0) })

@@ -1,4 +1,22 @@
 import AppKit
+import Darwin
+
+enum ProcessLifetime {
+    static func startDate(for app: NSRunningApplication) -> Date? {
+        if let launchDate = app.launchDate { return launchDate }
+
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(app.processIdentifier, PROC_PIDTBSDINFO, 0, &info, size) == size,
+              info.pbi_pid == UInt32(app.processIdentifier),
+              info.pbi_start_tvsec > 0,
+              info.pbi_start_tvusec < 1_000_000 else { return nil }
+
+        let timestamp = Double(info.pbi_start_tvsec) + Double(info.pbi_start_tvusec) / 1_000_000
+        guard timestamp.isFinite else { return nil }
+        return Date(timeIntervalSince1970: timestamp)
+    }
+}
 
 struct AppDefinition: Hashable, Codable, Sendable {
     let url: URL
@@ -13,7 +31,7 @@ struct AppDefinition: Hashable, Codable, Sendable {
 }
 struct InstanceID: Hashable, Sendable {
     let pid: pid_t
-    let launchDate: Date
+    let startDate: Date
 }
 struct Instance: Identifiable, Sendable {
     let id: InstanceID
@@ -51,12 +69,12 @@ final class ProcessMonitor {
         snapshot = NSWorkspace.shared.runningApplications.compactMap { app in
             guard !app.isTerminated, app.activationPolicy == .regular,
                   app.processIdentifier != ProcessInfo.processInfo.processIdentifier,
-                  let date = app.launchDate else { return nil }
-            return Instance(id: InstanceID(pid: app.processIdentifier, launchDate: date),
+                  let startDate = ProcessLifetime.startDate(for: app) else { return nil }
+            return Instance(id: InstanceID(pid: app.processIdentifier, startDate: startDate),
                             name: app.localizedName ?? app.bundleURL?.deletingPathExtension().lastPathComponent ?? "Application \(app.processIdentifier)",
                             url: app.bundleURL?.resolvingSymlinksInPath().standardizedFileURL,
                             bundleID: app.bundleIdentifier ?? "")
-        }.sorted { $0.id.launchDate < $1.id.launchDate }
+        }.sorted { $0.id.startDate < $1.id.startDate }
         activeInstance = snapshot.first { $0.id.pid == NSWorkspace.shared.frontmostApplication?.processIdentifier }?.id
         changed?(snapshot)
     }
@@ -66,7 +84,8 @@ final class ProcessMonitor {
     }
     func running(_ id: InstanceID) -> NSRunningApplication? {
         guard let app = NSRunningApplication(processIdentifier: id.pid),
-              !app.isTerminated, app.launchDate == id.launchDate, app.activationPolicy == .regular else { return nil }
+              !app.isTerminated, ProcessLifetime.startDate(for: app) == id.startDate,
+              app.activationPolicy == .regular else { return nil }
         return app
     }
     func activate(_ id: InstanceID) -> Bool {

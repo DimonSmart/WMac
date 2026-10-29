@@ -57,7 +57,7 @@ struct AccessibilityBoundary: Sendable {
     var trusted: @Sendable () -> Bool = { AXIsProcessTrusted() }
     var live: @Sendable (InstanceID) -> Bool = { id in
         guard let app = NSRunningApplication(processIdentifier: id.pid) else { return false }
-        return !app.isTerminated && app.launchDate == id.launchDate
+        return !app.isTerminated && ProcessLifetime.startDate(for: app) == id.startDate
     }
     var read: @Sendable (InstanceID) -> Result<[AXWindowValue], AXFailure> = { id in
         let app = AXUIElementCreateApplication(id.pid)
@@ -121,7 +121,7 @@ struct AccessibilityBoundary: Sendable {
             var pid: pid_t = 0
             guard AXUIElementGetPid(element, &pid) == .success, pid == id.pid,
                   let app = NSRunningApplication(processIdentifier: pid) else { return false }
-            return !app.isTerminated && app.launchDate == id.launchDate
+            return !app.isTerminated && ProcessLifetime.startDate(for: app) == id.startDate
         }
         guard valid() else { return "Window process lifetime no longer matches." }
         AXUIElementSetMessagingTimeout(element, 0.5)
@@ -148,7 +148,8 @@ struct AccessibilityBoundary: Sendable {
         return nil
     }
     var activate: @MainActor @Sendable (InstanceID) -> Bool = { id in
-        guard let app = NSRunningApplication(processIdentifier: id.pid), !app.isTerminated, app.launchDate == id.launchDate else { return false }
+        guard let app = NSRunningApplication(processIdentifier: id.pid), !app.isTerminated,
+              ProcessLifetime.startDate(for: app) == id.startDate else { return false }
         NSApplication.shared.yieldActivation(to: app)
         return app.activate(options: [])
     }

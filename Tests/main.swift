@@ -6,8 +6,8 @@ var failures = 0
     print("\(condition ? "PASS" : "FAIL") UNIT \(message)")
     if !condition { failures += 1 }
 }
-let original = InstanceID(pid: 123, launchDate: Date(timeIntervalSince1970: 100))
-let reused = InstanceID(pid: 123, launchDate: Date(timeIntervalSince1970: 200))
+let original = InstanceID(pid: 123, startDate: Date(timeIntervalSince1970: 100))
+let reused = InstanceID(pid: 123, startDate: Date(timeIntervalSince1970: 200))
 check(Set([original, original, reused]).count == 2, "PID reuse produces a different lifetime identity")
 let a = AppDefinition(url: URL(fileURLWithPath: "/Applications/A.app"), bundleID: "test.app")
 let b = AppDefinition(url: URL(fileURLWithPath: "/Applications/B.app"), bundleID: "test.app")
@@ -19,7 +19,7 @@ check(monitor.running(original) == nil, "nonexistent or recycled process is not 
 monitor.stop()
 
 func fixture(_ pid: pid_t, _ time: Double, _ definition: AppDefinition? = a, name: String = "A") -> Instance {
-    Instance(id: InstanceID(pid: pid, launchDate: Date(timeIntervalSince1970: time)), name: name,
+    Instance(id: InstanceID(pid: pid, startDate: Date(timeIntervalSince1970: time)), name: name,
              url: definition?.url, bundleID: definition?.bundleID ?? "")
 }
 func resolved(_ definition: AppDefinition, id: UUID = UUID()) -> ResolvedPin {
@@ -251,7 +251,7 @@ let captureState = TaskbarCoordinator()
 captureState.apply([one, two], active: one.id)
 let capture = ButtonCapture(captureState.snapshot.buttons[0])
 check(capture.matches(captureState.snapshot), "input capture matches exact current instance")
-captureState.apply([Instance(id: InstanceID(pid: one.id.pid, launchDate: Date(timeIntervalSince1970: 999)), name: one.name, url: one.url, bundleID: one.bundleID), two], active: nil)
+captureState.apply([Instance(id: InstanceID(pid: one.id.pid, startDate: Date(timeIntervalSince1970: 999)), name: one.name, url: one.url, bundleID: one.bundleID), two], active: nil)
 check(!capture.matches(captureState.snapshot), "stale captured button cannot target a reused PID")
 let capturePin = resolved(a)
 captureState.apply([one, two], active: nil); captureState.restore([capturePin])

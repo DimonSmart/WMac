@@ -6,7 +6,7 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
     await withCheckedContinuation { continuation in
         DispatchQueue.global().async {
             guard let running = NSRunningApplication(processIdentifier: id.pid), !running.isTerminated,
-                  running.launchDate == id.launchDate else { continuation.resume(returning: false); return }
+                  ProcessLifetime.startDate(for: running) == id.startDate else { continuation.resume(returning: false); return }
             let app = AXUIElementCreateApplication(id.pid)
             AXUIElementSetMessagingTimeout(app, 0.2)
             var focused: CFTypeRef?
@@ -66,7 +66,7 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
     }
     func confirmed(_ result: LaunchResult, _ label: String) -> Instance? {
         switch result {
-        case .success(let instance): print("SUCCESS \(label) pid=\(instance.id.pid) launch=\(instance.id.launchDate)"); owned.append(instance); return instance
+        case .success(let instance): print("SUCCESS \(label) pid=\(instance.id.pid) start=\(instance.id.startDate)"); owned.append(instance); return instance
         case .accessorySuccess(let pid): print("ERROR \(label) expected taskbar instance, got menu-bar PID \(pid)"); return nil
         case .error(let message): print("ERROR \(label): \(message)"); return nil
         case .unconfirmed(let message): print("UNCONFIRMED \(label): \(message)"); return nil
@@ -84,7 +84,7 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
     try? await Task.sleep(for: .milliseconds(700))
     for instance in instances {
         let live = NSRunningApplication(processIdentifier: instance.id.pid)
-        print("IDENTITY pid=\(instance.id.pid) expected=\(instance.id.launchDate.timeIntervalSince1970) actual=\(live?.launchDate?.timeIntervalSince1970 ?? -1) policy=\(live?.activationPolicy.rawValue ?? -1) terminated=\(live?.isTerminated ?? true)")
+        print("IDENTITY pid=\(instance.id.pid) expected=\(instance.id.startDate.timeIntervalSince1970) actual=\(live.flatMap { ProcessLifetime.startDate(for: $0)?.timeIntervalSince1970 } ?? -1) policy=\(live?.activationPolicy.rawValue ?? -1) terminated=\(live?.isTerminated ?? true)")
     }
     check(Set(instances.map(\.id.pid)).count == 3 && instances.allSatisfy { monitor.running($0.id) != nil }, "three simultaneous distinct regular GUI PIDs")
     for instance in instances {
@@ -96,7 +96,7 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
         check(requested && front == instance.id.pid, "activate exact PID \(instance.id.pid) request=\(requested), observed frontmost=\(front ?? -1)")
     }
-    let forgedID = InstanceID(pid: first.id.pid, launchDate: first.id.launchDate.addingTimeInterval(-1))
+    let forgedID = InstanceID(pid: first.id.pid, startDate: first.id.startDate.addingTimeInterval(-1))
     check(monitor.running(forgedID) == nil, "PID reuse/stale launch identity rejected")
     if ax.trusted {
         if case .unavailable = await ax.windows(for: forgedID) { check(true, "stale process identity cannot enumerate another lifetime's AX windows") }
