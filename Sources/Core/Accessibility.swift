@@ -202,6 +202,7 @@ final class AccessibilityService: @unchecked Sendable {
     // independent AX window inventory or observer is created.
     private var listeners: [InstanceID: [UUID: @Sendable () -> Void]] = [:]
     private var unavailableInstances: Set<InstanceID> = []
+    private var pendingObserverRefreshes: Set<InstanceID> = []
     private var processTokens: [NSObjectProtocol] = []
     var trusted: Bool { boundary.trusted() }
     init(boundary: AccessibilityBoundary = AccessibilityBoundary()) {
@@ -223,6 +224,16 @@ final class AccessibilityService: @unchecked Sendable {
         }
     }
     deinit { for token in processTokens { NSWorkspace.shared.notificationCenter.removeObserver(token) } }
+    // Move/resize notifications can arrive for every pixel. Coalesce them on the
+    // existing AX queue so event-driven previews do not queue hundreds of reads.
+    private func scheduleObserverRefresh(_ id: InstanceID) {
+        guard pendingObserverRefreshes.insert(id).inserted else { return }
+        queue.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self else { return }
+            self.pendingObserverRefreshes.remove(id)
+            _ = self.refresh(id)
+        }
+    }
     private func publishChange(_ id: InstanceID) {
         guard let callbacks = listeners[id] else { return }
         for callback in callbacks.values { callback() }
@@ -301,7 +312,7 @@ final class AccessibilityService: @unchecked Sendable {
             if !boundary.observesWindows { return .windows(state.records.map(\.snapshot)) }
             if observations[id] == nil {
                 observations[id] = WindowObservation.create(pid: id.pid, windows: values.map(\.element)) { [weak self] in
-                    self?.queue.async { [weak self] in guard let self else { return }; _ = self.refresh(id) }
+                    self?.queue.async { [weak self] in self?.scheduleObserverRefresh(id) }
                 }
             } else { observations[id]?.update(windows: values.map(\.element)) }
             return .windows(state.records.map(\.snapshot))
