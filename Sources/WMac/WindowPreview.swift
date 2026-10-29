@@ -171,7 +171,7 @@ final class WindowPreviewController {
         }
 
         startImages(windows, instance: id, capture: capture, token: token)
-        if !windows.isEmpty {
+        if panel != nil {
             listenerTask = Task { [weak self] in
                 guard let self else { return }
                 let listenerID = await self.runtime.accessibility.listen(id) { [weak self] in
@@ -227,6 +227,8 @@ final class WindowPreviewController {
                 if let view = self.content {
                     let changed = view.reconcile(updated)
                     view.setDataUnavailable(false)
+                    view.setPermissionHint(allowImages: self.runtime.settings.value.showWindowThumbnails,
+                                           axTrusted: self.runtime.permissions.trusted)
                     if changed || recovered {
                         self.generation = UUID()
                         self.imageTask?.cancel()
@@ -448,6 +450,7 @@ private final class WindowPreviewView: NSView {
     }
     required init?(coder: NSCoder) { fatalError() }
     func setPermissionHint(allowImages: Bool, axTrusted: Bool) {
+        permission.isHidden = true
         if !axTrusted {
             permission.title = tr("Enable Accessibility…", "Включить Универсальный доступ…")
         } else if allowImages && !CGPreflightScreenCaptureAccess() {
@@ -629,7 +632,7 @@ private final class WindowThumbnailService {
             available = content.windows.filter { $0.owningApplication?.processID == instance.pid }
         } catch {
             logger.error("ScreenCaptureKit window enumeration failed for process \(instance.pid): \(error.localizedDescription, privacy: .private)")
-            diagnose("graphicsEnumerationUnavailable", detail: "pid=\(instance.pid)")
+            for window in windows { diagnose("graphicsEnumerationUnavailable", window: window) }
             return
         }
         guard stillCurrent(), processIsCurrent(instance) else { return }

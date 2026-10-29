@@ -224,7 +224,8 @@ final class AccessibilityService: @unchecked Sendable {
     }
     deinit { for token in processTokens { NSWorkspace.shared.notificationCenter.removeObserver(token) } }
     private func publishChange(_ id: InstanceID) {
-        for callback in listeners[id]?.values ?? Dictionary<UUID, @Sendable () -> Void>().values { callback() }
+        guard let callbacks = listeners[id] else { return }
+        for callback in callbacks.values { callback() }
     }
     func listen(_ instance: InstanceID, changed: @escaping @Sendable () -> Void) async -> UUID {
         let token = UUID()
