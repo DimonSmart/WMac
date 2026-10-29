@@ -16,6 +16,9 @@ final class WindowPreviewController {
     private var closeTask: Task<Void, Never>?
     private var imageTask: Task<Void, Never>?
     private var snapshotTask: Task<Void, Never>?
+    private var listenerTask: Task<Void, Never>?
+    private var listening: (InstanceID, UUID)?
+    private var refreshRequest: UInt64 = 0
     private var generation = UUID()
     private var pointerOnButton = false
     private var pointerOnPanel = false
@@ -79,7 +82,14 @@ final class WindowPreviewController {
 
     func close() {
         hoverTask?.cancel(); closeTask?.cancel(); imageTask?.cancel(); snapshotTask?.cancel()
+        listenerTask?.cancel()
+        listenerTask = nil
+        if let listening {
+            Task { await runtime.accessibility.stopListening(listening.0, token: listening.1) }
+        }
+        listening = nil
         hoverTask = nil; closeTask = nil; imageTask = nil; snapshotTask = nil
+        refreshRequest &+= 1
         generation = UUID()
         if let button = source as? NSButton, let oldTooltip { button.toolTip = oldTooltip }
         self.oldTooltip = nil
@@ -162,45 +172,66 @@ final class WindowPreviewController {
 
         startImages(windows, instance: id, capture: capture, token: token)
         if !windows.isEmpty {
+            listenerTask = Task { [weak self] in
+                guard let self else { return }
+                let listenerID = await self.runtime.accessibility.listen(id) { [weak self] in
+                    Task { @MainActor [weak self] in self?.scheduleRefresh(instance: id, capture: capture) }
+                }
+                if Task.isCancelled || self.panel == nil || self.current?.instance != id {
+                    await self.runtime.accessibility.stopListening(id, token: listenerID)
+                    return
+                }
+                self.listening = (id, listenerID)
+            }
             snapshotTask = Task { [weak self] in
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(2))
                     guard !Task.isCancelled, let self, self.current?.instance == id,
                           self.runtime.valid(capture), self.panel != nil else { return }
-                    if !CGPreflightScreenCaptureAccess() {
-                        self.thumbnails.clear()
+                    self.scheduleRefresh(instance: id, capture: capture)
+                }
+            }
+        }
+    }
+
+    private func scheduleRefresh(instance id: InstanceID, capture: ButtonCapture) {
+        guard current?.instance == id, panel != nil, runtime.valid(capture) else { return }
+        refreshRequest &+= 1
+        let request = refreshRequest
+        let token = generation
+        Task { [weak self] in
+            guard let self else { return }
+            let latest = await self.runtime.accessibility.windows(for: id)
+            guard !Task.isCancelled, self.refreshRequest == request, self.generation == token,
+                  self.panel != nil, self.current?.instance == id, self.runtime.valid(capture) else { return }
+            if !CGPreflightScreenCaptureAccess() {
+                self.thumbnails.clear()
+                self.imageTask?.cancel()
+                self.content?.clearImages()
+                self.content?.setPermissionHint(allowImages: self.runtime.settings.value.showWindowThumbnails,
+                                                axTrusted: self.runtime.permissions.trusted)
+            }
+            switch latest {
+            case .unavailable:
+                if !self.axTemporarilyUnavailable {
+                    self.axTemporarilyUnavailable = true
+                    self.generation = UUID()
+                    self.imageTask?.cancel()
+                    self.thumbnails.clear()
+                    self.content?.clearImages()
+                    self.content?.setDataUnavailable(true)
+                }
+            case .windows(let updated):
+                let recovered = self.axTemporarilyUnavailable
+                self.axTemporarilyUnavailable = false
+                if let view = self.content {
+                    let changed = view.reconcile(updated)
+                    view.setDataUnavailable(false)
+                    if changed || recovered {
+                        self.generation = UUID()
                         self.imageTask?.cancel()
-                        self.content?.clearImages()
-                        self.content?.setPermissionHint(allowImages: self.runtime.settings.value.showWindowThumbnails,
-                                                         axTrusted: self.runtime.permissions.trusted)
-                    }
-                    let readGeneration = self.generation
-                    let latest = await self.runtime.accessibility.windows(for: id)
-                    guard !Task.isCancelled, self.panel != nil, self.current?.instance == id,
-                          self.runtime.valid(capture), self.generation == readGeneration else { continue }
-                    switch latest {
-                    case .unavailable:
-                        if !self.axTemporarilyUnavailable {
-                            self.axTemporarilyUnavailable = true
-                            self.generation = UUID()
-                            self.imageTask?.cancel()
-                            self.thumbnails.clear()
-                            self.content?.clearImages()
-                            self.content?.setDataUnavailable(true)
-                        }
-                    case .windows(let updated):
-                        let recovered = self.axTemporarilyUnavailable
-                        self.axTemporarilyUnavailable = false
-                        if let view = self.content {
-                            let changed = view.reconcile(updated)
-                            view.setDataUnavailable(false)
-                            if changed || recovered {
-                                self.generation = UUID()
-                                self.imageTask?.cancel()
-                                self.thumbnails.clear()
-                                self.startImages(updated, instance: id, capture: capture, token: self.generation)
-                            }
-                        }
+                        self.thumbnails.clear()
+                        self.startImages(updated, instance: id, capture: capture, token: self.generation)
                     }
                 }
             }

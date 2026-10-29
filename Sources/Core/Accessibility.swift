@@ -198,6 +198,10 @@ final class AccessibilityService: @unchecked Sendable {
     private var nextWindowLifecycle: UInt64 = 0
     private var nextObservedRevision: UInt64 = 0
     private var observations: [InstanceID: WindowObservation] = [:]
+    // Subscribers observe changes through the existing AX observer; no second
+    // independent AX window inventory or observer is created.
+    private var listeners: [InstanceID: [UUID: @Sendable () -> Void]] = [:]
+    private var unavailableInstances: Set<InstanceID> = []
     private var processTokens: [NSObjectProtocol] = []
     var trusted: Bool { boundary.trusted() }
     init(boundary: AccessibilityBoundary = AccessibilityBoundary()) {
@@ -219,26 +223,52 @@ final class AccessibilityService: @unchecked Sendable {
         }
     }
     deinit { for token in processTokens { NSWorkspace.shared.notificationCenter.removeObserver(token) } }
+    private func publishChange(_ id: InstanceID) {
+        for callback in listeners[id]?.values ?? Dictionary<UUID, @Sendable () -> Void>().values { callback() }
+    }
+    func listen(_ instance: InstanceID, changed: @escaping @Sendable () -> Void) async -> UUID {
+        let token = UUID()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            queue.async {
+                self.listeners[instance, default: [:]][token] = changed
+                continuation.resume()
+            }
+        }
+        return token
+    }
+    func stopListening(_ instance: InstanceID, token: UUID) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            queue.async {
+                self.listeners[instance]?.removeValue(forKey: token)
+                if self.listeners[instance]?.isEmpty == true { self.listeners.removeValue(forKey: instance) }
+                continuation.resume()
+            }
+        }
+    }
     private func invalidate(_ id: InstanceID) {
-        states.removeValue(forKey: id)
+        let existed = states.removeValue(forKey: id) != nil
         observations.removeValue(forKey: id)
+        unavailableInstances.remove(id)
+        if existed { publishChange(id) }
     }
     private func refresh(_ id: InstanceID) -> WindowResult {
         guard boundary.live(id) else { invalidate(id); return .unavailable("Process lifetime no longer matches.") }
         guard boundary.trusted() else {
             // Missing permission is unknown state, not evidence that the AX windows closed.
+            if unavailableInstances.insert(id).inserted { publishChange(id) }
             return .unavailable("Accessibility unavailable. Process activation remains available.")
         }
         switch boundary.read(id) {
         case .failure(let error):
-            // A transient timeout (for example during minimization animation) is
-            // unknown state, not proof that all windows were destroyed. Cached
-            // identities remain non-actionable until a fresh successful read.
+            // A transient timeout is unknown state; retain semantic identity but
+            // make listeners discard images until a successful fresh read.
+            if unavailableInstances.insert(id).inserted { publishChange(id) }
             return .unavailable(error.message)
         case .success(let values):
             guard boundary.live(id) else { invalidate(id); return .unavailable("Process exited during enumeration.") }
             var state = states[id] ?? State()
             let previous = state.records
+            let wasUnavailable = unavailableInstances.remove(id) != nil
             var refreshed: [Record] = []
             for value in values {
                 // Duplicate AX handles are one semantic window, never two competing cards.
@@ -264,6 +294,7 @@ final class AccessibilityService: @unchecked Sendable {
             if let toggled = state.minimizedByToggle, !keys.contains(toggled) { state.minimizedByToggle = nil }
             if let focused = state.records.first(where: { $0.snapshot.isFocused && !$0.snapshot.isMinimized }) { state.lastActive = focused.snapshot.id }
             states[id] = state
+            if wasUnavailable || previous.map(\.snapshot) != state.records.map(\.snapshot) { publishChange(id) }
             // Observer callbacks reconcile closure/focus/title/minimize changes. A fresh
             // read before every action also covers apps with incomplete notifications.
             if !boundary.observesWindows { return .windows(state.records.map(\.snapshot)) }
@@ -438,7 +469,8 @@ final class WindowObservation: @unchecked Sendable {
         registrations = registrations.filter { record in CFEqual(record.0, application) || windows.contains { CFEqual($0, record.0) } }
         for window in windows.prefix(64) {
             guard Date() < deadline else { break }
-            for name in [kAXUIElementDestroyedNotification, kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification, kAXTitleChangedNotification] {
+            for name in [kAXUIElementDestroyedNotification, kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification,
+                         kAXTitleChangedNotification, kAXMovedNotification, kAXResizedNotification] {
                 register(window, name)
             }
         }
