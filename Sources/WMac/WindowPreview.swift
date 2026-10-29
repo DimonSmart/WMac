@@ -232,6 +232,9 @@ final class WindowPreviewController {
                     if changed || recovered {
                         self.generation = UUID()
                         self.imageTask?.cancel()
+                        // Other AX windows can make an unchanged card's former
+                        // graphical match ambiguous. Clear every previous image.
+                        view.clearImages()
                         self.thumbnails.clear()
                         self.startImages(updated, instance: id, capture: capture, token: self.generation)
                     }
@@ -252,6 +255,9 @@ final class WindowPreviewController {
             }, onImage: { [weak self] reference, image, cached in
                 guard let self, self.generation == token else { return }
                 self.content?.update(window: reference, image: image, cached: cached)
+            }, onInvalidated: { [weak self] reference in
+                guard let self, self.generation == token else { return }
+                self.content?.clearImage(for: reference)
             })
         }
     }
@@ -358,9 +364,7 @@ private final class WindowPreviewCard: NSButton {
     required init?(coder: NSCoder) { fatalError() }
     @objc private func pick() { choose?(windowReference) }
     func update(_ reference: WindowReference) {
-        if reference.captureState != windowReference.captureState {
-            picture.image = NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil)
-        }
+        if reference.captureState != windowReference.captureState { clearImage() }
         windowReference = reference
         titleField.stringValue = reference.title
         toolTip = reference.title
@@ -492,6 +496,9 @@ private final class WindowPreviewView: NSView {
         card.scrollToVisible(card.bounds)
     }
     func clearImages() { for card in cards { card.clearImage() } }
+    func clearImage(for reference: WindowReference) {
+        cards.first(where: { $0.windowReference.captureState == reference.captureState })?.clearImage()
+    }
     func setDataUnavailable(_ unavailable: Bool) {
         info.stringValue = unavailable ? tr("Window data temporarily unavailable; retrying…", "Данные окон временно недоступны; повторяем…") :
             (cards.isEmpty ? tr("No manageable windows", "Нет управляемых окон") : "")
@@ -619,9 +626,11 @@ private final class WindowThumbnailService {
     func load(_ windows: [WindowReference], instance: InstanceID,
               accessibility: AccessibilityService,
               stillCurrent: @escaping @MainActor () -> Bool,
-              onImage: @escaping @MainActor (WindowReference, NSImage, Bool) -> Void) async {
+              onImage: @escaping @MainActor (WindowReference, NSImage, Bool) -> Void,
+              onInvalidated: @escaping @MainActor (WindowReference) -> Void) async {
         guard CGPreflightScreenCaptureAccess() else {
             diagnose("screenRecordingPermissionMissing", detail: "pid=\(instance.pid)")
+            for window in windows { onInvalidated(window) }
             return
         }
         guard stillCurrent(), processIsCurrent(instance) else { return }
@@ -632,7 +641,10 @@ private final class WindowThumbnailService {
             available = content.windows.filter { $0.owningApplication?.processID == instance.pid }
         } catch {
             logger.error("ScreenCaptureKit window enumeration failed for process \(instance.pid): \(error.localizedDescription, privacy: .private)")
-            for window in windows { diagnose("graphicsEnumerationUnavailable", window: window) }
+            for window in windows {
+                diagnose("graphicsEnumerationUnavailable", window: window)
+                onInvalidated(window)
+            }
             return
         }
         guard stillCurrent(), processIsCurrent(instance) else { return }
@@ -648,7 +660,10 @@ private final class WindowThumbnailService {
             diagnose(decision.reason.rawValue, window: window, candidates: decision.candidateIDs,
                      detail: "outcome=\(String(describing: decision.status)) association=\(decision.associationGeneration)")
             guard case .confirmedGraphicsMatch(let graphicsID) = decision.status,
-                  let source = available.first(where: { $0.windowID == graphicsID }) else { continue }
+                  let source = available.first(where: { $0.windowID == graphicsID }) else {
+                onInvalidated(window)
+                continue
+            }
 
             let frame = geometry.first(where: { $0.id == graphicsID })?.frame ?? source.frame
             let key = Key(identity: window.identity, revision: window.stateRevision, graphics: graphicsID,
@@ -661,6 +676,7 @@ private final class WindowThumbnailService {
                     onImage(window, saved.image, true)
                 } else {
                     cache.removeValue(forKey: key)
+                    onInvalidated(window)
                     continue
                 }
             }
@@ -679,6 +695,7 @@ private final class WindowThumbnailService {
                 guard await currentlyConfirmed(decision, graphicsID: graphicsID, baseline: windows,
                                                instance: instance, accessibility: accessibility, stillCurrent: stillCurrent) else {
                     diagnose("captureDiscardedStale", window: window, candidates: [graphicsID])
+                    onInvalidated(window)
                     continue
                 }
                 let picture = NSImage(cgImage: image, size: NSSize(width: CGFloat(image.width), height: CGFloat(image.height)))
@@ -693,6 +710,7 @@ private final class WindowThumbnailService {
                 logger.error("ScreenCaptureKit capture failed for process \(instance.pid), AX window \(window.id.uuidString, privacy: .public), graphics window \(graphicsID): \(error.localizedDescription, privacy: .private)")
                 diagnose("captureFailed", window: window, candidates: [graphicsID],
                          detail: "elapsedMs=\(Int(Date().timeIntervalSince(captureStarted) * 1000))")
+                onInvalidated(window)
             }
         }
     }
