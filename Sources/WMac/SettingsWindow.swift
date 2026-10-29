@@ -67,6 +67,7 @@ import ServiceManagement
     func refresh() {
         let focused = (window?.firstResponder as? NSView)?.identifier
         let selected = tabs.selectedTabViewItem.map { tabs.indexOfTabViewItem($0) } ?? 0
+        let scrollPositions = tabs.tabViewItems.map { ($0.view as? NSScrollView)?.contentView.bounds.origin ?? .zero }
         while let first = tabs.tabViewItems.first { tabs.removeTabViewItem(first) }
         let value = runtime.settings.value
         let general = section(tr("General", "Общие"))
@@ -77,9 +78,30 @@ import ServiceManagement
         }
         toggle(general, tr("Panels on all displays (off: primary display only)", "Панели на всех экранах (выкл.: только основной)"), value.allDisplays) { [weak self] on in self?.runtime.settings.edit { $0.allDisplays = on } }
         general.addArrangedSubview(text(tr("Launch at login: ", "Запуск при входе: ") + login.explanation))
-        button(general, tr("Enable launch at login", "Включить запуск при входе")) { [weak self] in self?.login.enable(); self?.refresh() }
-        button(general, tr("Disable launch at login", "Отключить запуск при входе")) { [weak self] in Task { await self?.login.disable(); self?.refresh() } }
-        button(general, tr("Login Items settings…", "Настройки объектов входа…")) { [weak self] in self?.login.openSettings() }
+        let loginStatus = SMAppService.mainApp.status
+        let launchAtLogin = SettingButton(tr("Launch at login", "Запускать при входе"), perform: {})
+        launchAtLogin.setButtonType(.switch)
+        switch loginStatus {
+        case .enabled, .requiresApproval: launchAtLogin.state = .on
+        case .notRegistered: launchAtLogin.state = .off
+        case .notFound: launchAtLogin.state = .off; launchAtLogin.isEnabled = false
+        @unknown default: launchAtLogin.state = .off; launchAtLogin.isEnabled = false
+        }
+        launchAtLogin.perform = { [weak self, weak launchAtLogin] in
+            guard let self else { return }
+            if launchAtLogin?.state == .on {
+                self.login.enable()
+                self.refresh()
+            } else {
+                Task { await self.login.disable(); self.refresh() }
+            }
+        }
+        general.addArrangedSubview(launchAtLogin)
+        if case .requiresApproval = loginStatus {
+            button(general, tr("Open Login Items settings…", "Открыть настройки объектов входа…")) { [weak self] in self?.login.openSettings() }
+        } else if login.error != nil {
+            button(general, tr("Open Login Items settings…", "Открыть настройки объектов входа…")) { [weak self] in self?.login.openSettings() }
+        }
         toggle(general, tr("Hide system Dock while WMac runs", "Скрывать системный Dock, пока работает WMac"), value.hideSystemDock) { [weak self] on in
             guard let self else { return }
             if on { self.confirmDockHiding() }
@@ -99,8 +121,6 @@ import ServiceManagement
             button(general, tr("Restore system Dock", "Восстановить системный Dock")) { [weak self] in self?.runtime.restoreSystemDock() }
         }
         button(general, tr("Dock settings…", "Настройки Dock…")) { [weak self] in self?.runtime.dockSettings() }
-        button(general, tr("Show Dock guidance", "Показать инструкцию Dock")) { [weak self] in self?.runtime.instructions() }
-        button(general, tr("Quit WMac!", "Выйти из WMac!")) { [weak self] in self?.runtime.quit() }
         let appearance = section(tr("Appearance", "Вид"))
         appearance.addArrangedSubview(text(tr("Panel height: \(Int(value.height)) pt", "Высота панели: \(Int(value.height)) пт")))
         let height = NSSlider(value: value.height, minValue: 40, maxValue: 64, target: self, action: #selector(heightChanged(_:)))
@@ -156,16 +176,30 @@ import ServiceManagement
         }
         let apps = section(tr("Applications", "Приложения"))
         apps.addArrangedSubview(text(tr("Pinned applications — use each menu to reorder, unpin or relink:", "Закрепления — меню позволяет изменить порядок, открепить или восстановить путь:")))
-        for pin in runtime.coordinator.pins {
-            let b = NSPopUpButton(title: pin.pin.name, target: nil, action: nil); b.pullsDown = true
-            b.menu?.addItem(withTitle: pin.pin.name, action: nil, keyEquivalent: "")
-            // A captured coordinator button retains exact instance semantics.
-            if let button = runtime.coordinator.snapshot.buttons.first(where: { $0.pinID == pin.pin.id }) {
-                for item in runtime.contextMenu(ButtonCapture(button)).items { item.menu?.removeItem(item); b.menu?.addItem(item) }
-            } else { b.menu?.addItem(withTitle: tr("Excluded (restore below to manage)", "Исключено (верните ниже для управления)"), action: nil, keyEquivalent: "") }
-            b.setAccessibilityLabel(pin.pin.name); apps.addArrangedSubview(b)
+        for (index, pin) in runtime.coordinator.pins.enumerated() {
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 8
+            row.addArrangedSubview(text(pin.pin.name))
+            if index > 0 {
+                button(row, tr("Up", "Выше")) { [weak self] in self?.runtime.movePin(pin.pin.id, to: index - 1) }
+            }
+            if index + 1 < runtime.coordinator.pins.count {
+                button(row, tr("Down", "Ниже")) { [weak self] in self?.runtime.movePin(pin.pin.id, to: index + 1) }
+            }
+            if let captured = runtime.coordinator.snapshot.buttons.first(where: { $0.pinID == pin.pin.id }) {
+                let capture = ButtonCapture(captured)
+                button(row, tr("Unpin", "Открепить")) { [weak self] in self?.runtime.pinMutations.submit(.remove(capture)) }
+                if pin.availability == .missing {
+                    button(row, tr("Relink…", "Изменить путь…")) { [weak self] in self?.runtime.chooseReplacement(capture) }
+                }
+            } else {
+                row.addArrangedSubview(text(tr("Excluded", "Исключено")))
+            }
+            apps.addArrangedSubview(row)
         }
-        apps.addArrangedSubview(text(tr("Exclusions hide both running buttons and pins; saved pins remain intact.", "Исключения скрывают процессы и закрепления; сохранённые закрепления остаются.")))
+                apps.addArrangedSubview(text(tr("Exclusions hide both running buttons and pins; saved pins remain intact.", "Исключения скрывают процессы и закрепления; сохранённые закрепления остаются.")))
         button(apps, tr("Exclude application…", "Исключить приложение…")) { [weak self] in self?.excludeApplication() }
         for definition in value.exclusions {
             button(apps, tr("Restore: ", "Вернуть: ") + definition.url.path) { [weak self] in self?.runtime.settings.edit { $0.exclusions.removeAll { $0 == definition } } }
@@ -174,10 +208,16 @@ import ServiceManagement
         let permissions = section(tr("Permissions", "Разрешения"))
         permissions.addArrangedSubview(text(runtime.permissions.trusted ? tr("Accessibility: enabled", "Универсальный доступ: включён") : tr("Accessibility: unavailable", "Универсальный доступ: недоступен")))
         permissions.addArrangedSubview(text(tr("Accessibility enables window listing, selection, restore and minimization. Process discovery, pins, launching, switching by PID and termination work without it. Screen Recording is requested only when the user explicitly enables thumbnails.", "Универсальный доступ позволяет выбирать, восстанавливать и сворачивать окна. Процессы, закрепления, запуск, переключение по PID и завершение работают без него. Запись экрана запрашивается только после явного разрешения пользователя.")))
-        button(permissions, tr("Request Accessibility…", "Запросить Универсальный доступ…")) { [weak self] in self?.runtime.requestPermission(); self?.refresh() }
-        button(permissions, tr("Open Accessibility settings…", "Открыть настройки Универсального доступа…")) { [weak self] in self?.runtime.permissionSettings() }
-        button(permissions, tr("Refresh status", "Обновить статус")) { [weak self] in self?.refresh() }
+        if !runtime.permissions.trusted {
+            button(permissions, tr("Configure Accessibility…", "Настроить Универсальный доступ…")) { [weak self] in self?.runtime.permissionSettings() }
+        }
         tabs.selectTabViewItem(at: max(0, min(selected, tabs.numberOfTabViewItems - 1)))
+        for (index, item) in tabs.tabViewItems.enumerated() where index < scrollPositions.count {
+            guard let scroll = item.view as? NSScrollView else { continue }
+            scroll.layoutSubtreeIfNeeded()
+            scroll.contentView.scroll(to: scrollPositions[index])
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
         if let focused {
             func matching(_ view: NSView) -> NSView? {
                 if view.identifier == focused { return view }

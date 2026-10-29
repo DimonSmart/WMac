@@ -105,7 +105,6 @@ final class WindowPreviewController {
         let result = await runtime.accessibility.windows(for: id)
         guard !Task.isCancelled, generation == token, runtime.valid(capture),
               (explicit || (pointerOnButton && self.source === button)) else { return }
-        runtime.cacheMenuWindowResult(result, for: id)
         let windows: [WindowReference]
         let information: String?
         switch result {

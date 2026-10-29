@@ -37,8 +37,6 @@ func tr(_ en: String, _ ru: String) -> String {
     private var loading = Set<PanelIconSource>()
     private var windowTitles: [InstanceID: String] = [:]
     private var titleRequest: (InstanceID, Date)?
-    private var menuWindowCache: [InstanceID: (date: Date, result: WindowResult)] = [:]
-    private var menuWindowRefreshes: [InstanceID: UUID] = [:]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -53,7 +51,7 @@ func tr(_ en: String, _ ru: String) -> String {
         status.button?.image = NSImage(systemSymbolName: "rectangle.bottomthird.inset.filled", accessibilityDescription: "WMac!")
         status.menu = controlsMenu()
         let main = NSMenu(); let applicationItem = NSMenuItem(title: "WMac!", action: nil, keyEquivalent: "")
-        applicationItem.submenu = controlsMenu(); main.addItem(applicationItem); NSApp.mainMenu = main
+        applicationItem.submenu = applicationMenu(); main.addItem(applicationItem); NSApp.mainMenu = main
         monitor.changed = { [weak self] values in
             guard let self else { return }
             coordinator.apply(values, active: monitor.activeInstance)
@@ -95,8 +93,6 @@ func tr(_ en: String, _ ru: String) -> String {
     func render() {
         let snapshot = coordinator.snapshot
         let live = Set(snapshot.buttons.compactMap { $0.instance?.id })
-        menuWindowCache = menuWindowCache.filter { live.contains($0.key) }
-        menuWindowRefreshes = menuWindowRefreshes.filter { live.contains($0.key) }
         windowTitles = windowTitles.filter { live.contains($0.key) }
         if accessibility.trusted, let active = snapshot.activeInstance,
            titleRequest?.0 != active || Date().timeIntervalSince(titleRequest?.1 ?? .distantPast) > 10 {
@@ -130,29 +126,6 @@ func tr(_ en: String, _ ru: String) -> String {
     func valid(_ capture: ButtonCapture) -> Bool {
         guard capture.matches(coordinator.snapshot) else { return false }
         return capture.instance.map { monitor.running($0) != nil } ?? true
-    }
-    func cacheMenuWindowResult(_ result: WindowResult, for id: InstanceID) {
-        menuWindowRefreshes[id] = nil
-        guard monitor.running(id) != nil else {
-            menuWindowCache[id] = nil
-            return
-        }
-        menuWindowCache[id] = (Date(), result)
-    }
-    private func refreshMenuWindows(for id: InstanceID) {
-        guard menuWindowRefreshes[id] == nil else { return }
-        let token = UUID()
-        menuWindowRefreshes[id] = token
-        let service = accessibility
-        Task.detached(priority: .userInitiated) { [weak self, service] in
-            let result = await service.windows(for: id)
-            await self?.finishMenuWindowRefresh(result, for: id, token: token)
-        }
-    }
-    private func finishMenuWindowRefresh(_ result: WindowResult, for id: InstanceID, token: UUID) {
-        guard menuWindowRefreshes[id] == token else { return }
-        menuWindowRefreshes[id] = nil
-        cacheMenuWindowResult(result, for: id)
     }
     func click(_ capture: ButtonCapture, new: Bool) {
         guard valid(capture) else { notify(tr("This instance is no longer available", "Экземпляр больше недоступен")); return }
@@ -255,7 +228,7 @@ func tr(_ en: String, _ ru: String) -> String {
     func dropApplications(_ urls: [URL]) { pinMutations.submit(.drop(urls)) }
     func movePin(_ id: UUID, to index: Int) { pinMutations.submit(.move(id, index)) }
     @objc private func retryPins() { pinMutations.retry() }
-    private func chooseReplacement(_ capture: ButtonCapture) {
+    func chooseReplacement(_ capture: ButtonCapture) {
         let picker = NSOpenPanel()
         picker.title = tr("Choose replacement application", "Выберите новое расположение приложения")
         picker.prompt = tr("Relink", "Связать"); picker.canChooseDirectories = false
@@ -276,36 +249,46 @@ func tr(_ en: String, _ ru: String) -> String {
         // Permission request follows this explicit user window-control action only.
         permissions.requestAccessFromUserAction()
     }
+    private func applicationMenu() -> NSMenu {
+        let menu = NSMenu(title: "WMac!")
+        func item(_ en: String, _ ru: String, _ selector: Selector, key: String = "") {
+            let value = NSMenuItem(title: tr(en, ru), action: selector, keyEquivalent: key)
+            value.target = self
+            menu.addItem(value)
+        }
+        item("About WMac!", "О WMac!", #selector(about))
+        menu.addItem(.separator())
+        item("Settings…", "Настройки…", #selector(showSettings), key: ",")
+        item("Help", "Справка", #selector(instructions))
+        menu.addItem(.separator())
+        item("Quit WMac!", "Выйти из WMac!", #selector(quit), key: "q")
+        return menu
+    }
     func controlsMenu() -> NSMenu {
         let menu = NSMenu(title: "WMac!")
         func item(_ en: String, _ ru: String, _ selector: Selector, key: String = "") {
-            let value = NSMenuItem(title: tr(en, ru), action: selector, keyEquivalent: key); value.target = self; menu.addItem(value)
+            let value = NSMenuItem(title: tr(en, ru), action: selector, keyEquivalent: key)
+            value.target = self
+            menu.addItem(value)
         }
         item(displays.hidden ? "Show taskbars" : "Hide taskbars", displays.hidden ? "Показать панели" : "Скрыть панели", #selector(togglePanels))
         if dockVisibility.needsRecovery {
             item("Restore system Dock", "Восстановить системный Dock", #selector(restoreSystemDock))
         }
-        if pinMutations.failure != nil { item("Retry pins", "Повторить загрузку/сохранение закреплений", #selector(retryPins)) }
-        let pinMenu = NSMenu(title: tr("Pinned applications", "Закреплённые приложения"))
-        for button in coordinator.snapshot.buttons where button.pinID != nil {
-            let entry = NSMenuItem(title: button.name, action: nil, keyEquivalent: "")
-            entry.submenu = contextMenu(ButtonCapture(button)); pinMenu.addItem(entry)
+        if pinMutations.failure != nil {
+            item("Retry pins", "Повторить сохранение закреплений", #selector(retryPins))
         }
-        let pinEntry = NSMenuItem(title: pinMenu.title, action: nil, keyEquivalent: "")
-        pinEntry.submenu = pinMenu; menu.addItem(pinEntry)
+        menu.addItem(.separator())
         item("Settings…", "Настройки…", #selector(showSettings), key: ",")
         item("About WMac!", "О WMac!", #selector(about))
-        item("Instructions / Dock coexistence", "Инструкция / системный Dock", #selector(instructions))
-        item(permissions.trusted ? "Accessibility: enabled" : "Accessibility: limited", permissions.trusted ? "Универсальный доступ: включён" : "Универсальный доступ: ограничен", #selector(permissionStatus))
-        item("Enable Accessibility…", "Включить Универсальный доступ…", #selector(requestPermission))
-        item("Accessibility settings…", "Настройки Универсального доступа…", #selector(permissionSettings))
-        item("Dock settings…", "Настройки Dock…", #selector(dockSettings))
-        if !message.isEmpty { menu.addItem(.separator()); item(message + "…", message + "…", #selector(showDetails)) }
-        menu.addItem(.separator()); item("Quit WMac!", "Выйти из WMac!", #selector(quit), key: "q")
+        item("Help", "Справка", #selector(instructions))
+        menu.addItem(.separator())
+        item("Quit WMac!", "Выйти из WMac!", #selector(quit), key: "q")
         return menu
     }
     private func refreshMenus() {
-        status.menu = controlsMenu(); NSApp.mainMenu?.items.first?.submenu = controlsMenu()
+        status.menu = controlsMenu()
+        NSApp.mainMenu?.items.first?.submenu = applicationMenu()
     }
     private func synchronizeDockVisibility() {
         guard settings.ready else { return }
@@ -342,8 +325,7 @@ func tr(_ en: String, _ ru: String) -> String {
     @objc func quit() { NSApp.terminate(nil) }
     @objc func about() { aboutWindow.show() }
     @objc func instructions() { showInfo(tr("Instructions", "Инструкция"), tr("Click an instance to switch. Shift-click or middle-click requests a new independent process. Right-click for windows and process actions. Use Tab and Space for buttons, Control-click or Shift-F10 for menus.\n\nWMac coexists with the system Dock. You may enable Dock auto-hide or move it to a side in System Settings → Desktop & Dock. WMac can temporarily hide Dock with explicit consent in General settings; it restores the original preferences when the mode is disabled or WMac quits. It never reserves screen space. Hide panels from the menu bar if they interfere. Fullscreen and Spaces behavior needs verification on your display setup.", "Нажмите на экземпляр для переключения. Shift-клик или средний клик запрашивает новый процесс. Правый клик открывает окна и действия. Tab и пробел управляют кнопками, Control-клик или Shift-F10 — меню.\n\nСистемный Dock остаётся доступен. Автоскрытие или расположение сбоку можно включить в Системных настройках → Рабочий стол и Dock. WMac может временно скрывать Dock по вашему выбору в разделе «Общие», восстанавливая прежние параметры при выключении режима или выходе. Экранное пространство не резервируется. При необходимости скройте панели из строки меню. Полноэкранный режим и Spaces требуют проверки на вашем оборудовании.")) }
-    @objc func permissionStatus() { showInfo(tr("Accessibility", "Универсальный доступ"), tr(permissions.status.explanation, permissions.trusted ? "Доступ включён. Управление отдельными окнами зависит от приложения." : "Для выбора, восстановления и сворачивания окон нужен Универсальный доступ. Переключение процессов, запуск и завершение доступны без него.")) }
-    @objc func requestPermission() { permissionExplained = true; permissionStatus(); permissions.requestAccessFromUserAction() }
+    @objc func requestPermission() { permissionExplained = true; permissions.requestAccessFromUserAction() }
     @objc func permissionSettings() { permissions.openSettingsFromUserAction() }
     func requestScreenRecording() {
         // Only explicit user actions may initiate a TCC request.
@@ -356,7 +338,6 @@ func tr(_ en: String, _ ru: String) -> String {
                  tr("Allow WMac in Screen & System Audio Recording settings.", "Разрешите WMac доступ в настройках записи экрана и системного звука."))
     }
     @objc func dockSettings() { if let url = URL(string: "x-apple.systempreferences:com.apple.Desktop-Settings.extension") { NSWorkspace.shared.open(url) } }
-    @objc func showDetails() { showInfo(message, detail.isEmpty ? message : detail) }
     private func showInfo(_ title: String, _ text: String) {
         let window = NSWindow(contentRect: NSRect(x: 260, y: 260, width: 540, height: 310), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = title; window.isReleasedWhenClosed = false
@@ -378,36 +359,9 @@ func tr(_ en: String, _ ru: String) -> String {
         action(capture.instance == nil ? "Open" : "Switch", capture.instance == nil ? "Открыть" : "Переключиться", "switch")
         action("New instance", "Новый экземпляр", "new")
         if let id = capture.instance {
-            action("Show windows…", "Показать окна…", "preview")
+            action("Windows…", "Окна…", "preview")
             separator()
-            let submenu = NSMenu(title: tr("Windows", "Окна"))
-            // Build a complete immutable snapshot BEFORE native menu tracking.
-            // Async refresh is cached for a subsequent opening, not applied to a live NSMenu.
-            if let cached = menuWindowCache[id], Date().timeIntervalSince(cached.date) < 15 {
-                switch cached.result {
-                case .unavailable(let reason):
-                    let unavailable = submenu.addItem(withTitle: tr("Windows unavailable", "Окна недоступны"), action: nil, keyEquivalent: "")
-                    unavailable.isEnabled = false; unavailable.toolTip = reason
-                case .windows(let windows):
-                    if windows.isEmpty {
-                        let empty = submenu.addItem(withTitle: tr("No manageable windows", "Нет управляемых окон"), action: nil, keyEquivalent: "")
-                        empty.isEnabled = false
-                    }
-                    for window in windows {
-                        let item = NSMenuItem(title: window.title + (window.isMinimized ? tr(" (minimized)", " (свёрнуто)") : ""), action: #selector(menuAction(_:)), keyEquivalent: "")
-                        item.target = self; item.state = window.isFocused ? .on : .off
-                        item.representedObject = MenuCommand(capture: capture, action: "window", window: window)
-                        submenu.addItem(item)
-                    }
-                }
-            } else {
-                let loading = submenu.addItem(withTitle: tr("Loading… reopen to see windows", "Загрузка… откройте меню повторно"), action: nil, keyEquivalent: "")
-                loading.isEnabled = false
-                refreshMenuWindows(for: id)
-            }
-            let parent = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
-            parent.submenu = submenu; menu.addItem(parent)
-            separator()
+            action("Hide", "Скрыть", "hide")            separator()
             action("Hide", "Скрыть", "hide")
             action("Terminate this instance", "Завершить этот экземпляр", "terminate")
             action("Force terminate…", "Завершить принудительно…", "force")
@@ -425,7 +379,6 @@ func tr(_ en: String, _ ru: String) -> String {
         } else if capture.application != nil { action("Pin", "Закрепить", "pin") }
         separator()
         action("Reveal in Finder", "Показать в Finder", "reveal")
-        action("PID / path information", "Сведения: PID / путь", "info")
         return menu
     }
     @objc private func menuAction(_ sender: NSMenuItem) {
@@ -451,7 +404,6 @@ func tr(_ en: String, _ ru: String) -> String {
             alert.addButton(withTitle: tr("Cancel", "Отмена")); alert.addButton(withTitle: tr("Force terminate", "Завершить")); NSApp.activate()
             if alert.runModal() == .alertSecondButtonReturn, valid(capture), let id = capture.instance { _ = monitor.running(id)?.forceTerminate() }
         case "reveal": if let url = capture.application?.url { NSWorkspace.shared.activateFileViewerSelecting([url]) }
-        case "info": showInfo("WMac!", "PID: \(capture.instance?.pid.description ?? "—")\n\(capture.application?.url.path ?? "—")")
         default: break
         }
     }
