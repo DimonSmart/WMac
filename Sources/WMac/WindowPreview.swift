@@ -20,6 +20,7 @@ final class WindowPreviewController {
     private var pointerOnButton = false
     private var pointerOnPanel = false
     private var explicitOpen = false
+    private var axTemporarilyUnavailable = false
 
     init(runtime: TaskbarDelegate) { self.runtime = runtime }
 
@@ -85,6 +86,7 @@ final class WindowPreviewController {
         panel?.orderOut(nil); panel?.close()
         panel = nil; content = nil; current = nil; source = nil
         explicitOpen = false
+        axTemporarilyUnavailable = false
         pointerOnPanel = false; pointerOnButton = false
     }
 
@@ -148,6 +150,7 @@ final class WindowPreviewController {
             button.toolTip = nil
         }
         current = capture
+        axTemporarilyUnavailable = information != nil
         explicitOpen = explicit
         panel = popup; content = view
         popup.orderFront(nil)
@@ -171,12 +174,33 @@ final class WindowPreviewController {
                         self.content?.setPermissionHint(allowImages: self.runtime.settings.value.showWindowThumbnails,
                                                          axTrusted: self.runtime.permissions.trusted)
                     }
+                    let readGeneration = self.generation
                     let latest = await self.runtime.accessibility.windows(for: id)
-                    guard !Task.isCancelled, self.panel != nil, self.current?.instance == id else { return }
-                    if case .windows(let updated) = latest, let view = self.content, view.reconcile(updated) {
-                        self.generation = UUID()
-                        self.imageTask?.cancel()
-                        self.startImages(updated, instance: id, capture: capture, token: self.generation)
+                    guard !Task.isCancelled, self.panel != nil, self.current?.instance == id,
+                          self.runtime.valid(capture), self.generation == readGeneration else { continue }
+                    switch latest {
+                    case .unavailable:
+                        if !self.axTemporarilyUnavailable {
+                            self.axTemporarilyUnavailable = true
+                            self.generation = UUID()
+                            self.imageTask?.cancel()
+                            self.thumbnails.clear()
+                            self.content?.clearImages()
+                            self.content?.setDataUnavailable(true)
+                        }
+                    case .windows(let updated):
+                        let recovered = self.axTemporarilyUnavailable
+                        self.axTemporarilyUnavailable = false
+                        if let view = self.content {
+                            let changed = view.reconcile(updated)
+                            view.setDataUnavailable(false)
+                            if changed || recovered {
+                                self.generation = UUID()
+                                self.imageTask?.cancel()
+                                self.thumbnails.clear()
+                                self.startImages(updated, instance: id, capture: capture, token: self.generation)
+                            }
+                        }
                     }
                 }
             }
@@ -188,12 +212,13 @@ final class WindowPreviewController {
         imageTask?.cancel()
         imageTask = Task { [weak self] in
             guard let self else { return }
-            await self.thumbnails.load(windows, instance: instance, stillCurrent: { [weak self] in
+            await self.thumbnails.load(windows, instance: instance, accessibility: self.runtime.accessibility,
+                                       stillCurrent: { [weak self] in
                 guard let self else { return false }
                 return self.generation == token && self.panel != nil && self.runtime.valid(capture)
-            }, onImage: { [weak self] windowID, image, cached in
+            }, onImage: { [weak self] reference, image, cached in
                 guard let self, self.generation == token else { return }
-                self.content?.update(windowID: windowID, image: image, cached: cached)
+                self.content?.update(window: reference, image: image, cached: cached)
             })
         }
     }
@@ -300,7 +325,7 @@ private final class WindowPreviewCard: NSButton {
     required init?(coder: NSCoder) { fatalError() }
     @objc private func pick() { choose?(windowReference) }
     func update(_ reference: WindowReference) {
-        if reference.title != windowReference.title || reference.frame != windowReference.frame {
+        if reference.captureState != windowReference.captureState {
             picture.image = NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil)
         }
         windowReference = reference
@@ -406,7 +431,7 @@ private final class WindowPreviewView: NSView {
         let updatedIDs = Set(windows.map(\.id))
         let staleAssociation = oldIDs != updatedIDs || cards.contains { card in
             guard let current = updatedByID[card.windowReference.id] else { return true }
-            return current.title != card.windowReference.title || current.frame != card.windowReference.frame
+            return current.captureState != card.windowReference.captureState
         }
         for card in cards where !updatedIDs.contains(card.windowReference.id) { card.removeFromSuperview() }
         cards.removeAll { !updatedIDs.contains($0.windowReference.id) }
@@ -433,8 +458,14 @@ private final class WindowPreviewView: NSView {
         card.scrollToVisible(card.bounds)
     }
     func clearImages() { for card in cards { card.clearImage() } }
-    func update(windowID: UUID, image: NSImage, cached: Bool) {
-        cards.first(where: { $0.windowReference.id == windowID })?.show(image, cached: cached)
+    func setDataUnavailable(_ unavailable: Bool) {
+        info.stringValue = unavailable ? tr("Window data temporarily unavailable; retrying…", "Данные окон временно недоступны; повторяем…") :
+            (cards.isEmpty ? tr("No manageable windows", "Нет управляемых окон") : "")
+    }
+    func update(window reference: WindowReference, image: NSImage, cached: Bool) {
+        guard let card = cards.first(where: { $0.windowReference.identity == reference.identity }),
+              card.windowReference.captureState == reference.captureState else { return }
+        card.show(image, cached: cached)
     }
     @objc private func refresh() { onRefresh?() }
     @objc private func permit() { onPermission?() }
@@ -451,11 +482,31 @@ private final class WindowPreviewView: NSView {
 @MainActor
 private final class WindowThumbnailService {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "app.wmac.WMac", category: "WindowPreviews")
-    private struct Key: Hashable { let instance: InstanceID; let window: UUID; let graphics: CGWindowID; let frame: [Int] }
+    private let diagnosticsEnabled = ProcessInfo.processInfo.arguments.contains("--window-diagnostics") ||
+        ProcessInfo.processInfo.environment["WMAC_WINDOW_DIAGNOSTICS"] == "1"
+    private let diagnosticTitlesEnabled = ProcessInfo.processInfo.environment["WMAC_WINDOW_DIAGNOSTICS_TITLES"] == "1"
+    private struct Key: Hashable {
+        let identity: WindowIdentity
+        let revision: UInt64
+        let graphics: CGWindowID
+        let frame: [Int]
+    }
     private struct Entry { let image: NSImage; let date: Date; let bytes: Int }
     private var cache: [Key: Entry] = [:]
     private var activeCaptures = 0
     private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    private func diagnose(_ code: String, window: WindowReference? = nil,
+                          candidates: [CGWindowID] = [], detail: String = "") {
+        guard diagnosticsEnabled else { return }
+        let identity = window.map {
+            let frame = $0.frame.map { "(\($0.minX),\($0.minY),\($0.width),\($0.height))" } ?? "unknown"
+            let title = diagnosticTitlesEnabled ? $0.title : "<redacted>"
+            return "pid=\($0.instance.pid) start=\($0.instance.startDate.timeIntervalSince1970) ax=\($0.id) lifecycle=\($0.lifecycle) revision=\($0.stateRevision) role=\($0.role ?? "?") subrole=\($0.subrole ?? "?") title=\(title) frame=\(frame) minimized=\($0.isMinimized)"
+        } ?? ""
+        logger.info("windowIdentity code=\(code, privacy: .public) \(identity, privacy: .public) candidates=\(String(describing: candidates), privacy: .public) \(detail, privacy: .public)")
+    }
+
     private func acquire() async {
         if activeCaptures < 2 { activeCaptures += 1; return }
         await withCheckedContinuation { waiting.append($0) }
@@ -464,77 +515,150 @@ private final class WindowThumbnailService {
         if waiting.isEmpty { activeCaptures -= 1 }
         else { waiting.removeFirst().resume() }
     }
-    func clear() { cache.removeAll() }
+    func clear() {
+        if !cache.isEmpty { diagnose("cacheInvalidated", detail: "reason=explicitOrUnavailable") }
+        cache.removeAll()
+    }
     func purge(live: Set<InstanceID>) {
-        cache = cache.filter { live.contains($0.key.instance) }
+        cache = cache.filter { live.contains($0.key.identity.instance) }
+    }
+
+    private func processIsCurrent(_ instance: InstanceID) -> Bool {
+        guard let app = NSRunningApplication(processIdentifier: instance.pid), !app.isTerminated else { return false }
+        return ProcessLifetime.startDate(for: app) == instance.startDate
+    }
+
+    private func graphics(for instance: InstanceID, from available: [SCWindow]) async -> [GraphicalWindow] {
+        // AXPosition and kCGWindowBounds share global top-left screen coordinates;
+        // SCWindow.frame is not used for matching (particularly on secondary displays).
+        let bounds = await Task.detached(priority: .utility) {
+            Self.globalWindowBounds(processID: instance.pid)
+        }.value
+        return available.compactMap { source in
+            guard let frame = bounds[source.windowID] else { return nil }
+            return GraphicalWindow(id: source.windowID, title: source.title ?? "", frame: frame,
+                                   processID: source.owningApplication?.processID)
+        }
+    }
+
+    // Every asynchronous result, including a cache hit, requires a *fresh* AX
+    // read and a fresh graphical candidate set. A timeout is NOT an empty set.
+    // There is no suspension between the final check and publishing the image.
+    private func currentlyConfirmed(_ resolution: GraphicsResolution, graphicsID: CGWindowID,
+                                    baseline: [WindowReference], instance: InstanceID,
+                                    accessibility: AccessibilityService,
+                                    stillCurrent: @MainActor () -> Bool) async -> Bool {
+        guard stillCurrent(), !Task.isCancelled, processIsCurrent(instance),
+              CGPreflightScreenCaptureAccess() else { return false }
+        let refreshed = await accessibility.windows(for: instance)
+        guard case .windows(let latest) = refreshed, latest.count == baseline.count,
+              Set(latest.map(\.identity)) == Set(baseline.map(\.identity)),
+              latest.allSatisfy({ now in baseline.contains { $0.captureState == now.captureState } }),
+              let current = latest.first(where: { $0.identity == resolution.identity }),
+              current.stateRevision == resolution.observedRevision else {
+            diagnose("staleAXState", window: baseline.first(where: { $0.identity == resolution.identity }))
+            return false
+        }
+        let updatedGraphics: [SCWindow]
+        do {
+            updatedGraphics = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
+                .windows.filter { $0.owningApplication?.processID == instance.pid }
+        } catch {
+            diagnose("graphicsEnumerationUnavailable", window: current)
+            return false
+        }
+        guard stillCurrent(), !Task.isCancelled, processIsCurrent(instance) else { return false }
+        let geometry = await graphics(for: instance, from: updatedGraphics)
+        let latestMatches = WindowMatcher.resolve(latest, to: geometry)
+        guard let decision = latestMatches[current.id],
+              decision.identity == resolution.identity,
+              decision.observedRevision == resolution.observedRevision,
+              decision.status == .confirmedGraphicsMatch(graphicsID),
+              updatedGraphics.contains(where: { $0.windowID == graphicsID }),
+              stillCurrent(), !Task.isCancelled, processIsCurrent(instance) else {
+            diagnose("graphicsMatchChanged", window: current, candidates: [graphicsID])
+            return false
+        }
+        return CGPreflightScreenCaptureAccess()
     }
 
     func load(_ windows: [WindowReference], instance: InstanceID,
+              accessibility: AccessibilityService,
               stillCurrent: @escaping @MainActor () -> Bool,
-              onImage: @escaping @MainActor (UUID, NSImage, Bool) -> Void) async {
-        guard CGPreflightScreenCaptureAccess(), stillCurrent() else { return }
+              onImage: @escaping @MainActor (WindowReference, NSImage, Bool) -> Void) async {
+        guard CGPreflightScreenCaptureAccess() else {
+            diagnose("screenRecordingPermissionMissing", detail: "pid=\(instance.pid)")
+            return
+        }
+        guard stillCurrent(), processIsCurrent(instance) else { return }
+        let started = Date()
         let available: [SCWindow]
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
             available = content.windows.filter { $0.owningApplication?.processID == instance.pid }
         } catch {
             logger.error("ScreenCaptureKit window enumeration failed for process \(instance.pid): \(error.localizedDescription, privacy: .private)")
+            diagnose("graphicsEnumerationUnavailable", detail: "pid=\(instance.pid)")
             return
         }
+        guard stillCurrent(), processIsCurrent(instance) else { return }
+        let geometry = await graphics(for: instance, from: available)
+        let resolutions = WindowMatcher.resolve(windows, to: geometry)
+        diagnose("resolutionCompleted", detail: "pid=\(instance.pid) windows=\(windows.count) graphics=\(geometry.count) elapsedMs=\(Int(Date().timeIntervalSince(started) * 1000))")
 
-        // AXPosition is global screen-space with a top-left origin. SCWindow.frame is
-        // documented relative to a display, so use the public Core Graphics bounds
-        // for that same window ID to compare geometry in the shared global space.
-        let globalBounds = await Task.detached(priority: .utility) {
-            Self.globalWindowBounds(processID: instance.pid)
-        }.value
-        let geometry = available.compactMap { source -> GraphicalWindow? in
-            guard let frame = globalBounds[source.windowID] else { return nil }
-            return GraphicalWindow(id: source.windowID, title: source.title ?? "", frame: frame)
-        }
-        let associations = WindowMatcher.match(windows, to: geometry)
         for window in windows {
-            guard !Task.isCancelled, stillCurrent() else { return }
-            guard let association = associations[window.id] else { continue }
-            let graphicsID: CGWindowID
-            switch association {
-            case .matched(let id): graphicsID = id
-            case .unmatched:
-                logger.info("No global window geometry matched process \(instance.pid), AX window \(window.id.uuidString, privacy: .public)")
-                continue
-            case .ambiguous:
-                logger.info("Window geometry was ambiguous for process \(instance.pid), AX window \(window.id.uuidString, privacy: .public)")
-                continue
-            }
-            guard let source = available.first(where: { $0.windowID == graphicsID }) else { continue }
-            let frame = source.frame
-            let key = Key(instance: instance, window: window.id, graphics: graphicsID,
+            guard !Task.isCancelled, stillCurrent(), processIsCurrent(instance) else { return }
+            guard let decision = resolutions[window.id],
+                  decision.identity == window.identity,
+                  decision.observedRevision == window.stateRevision else { continue }
+            diagnose(decision.reason.rawValue, window: window, candidates: decision.candidateIDs,
+                     detail: "outcome=\(String(describing: decision.status)) association=\(decision.associationGeneration)")
+            guard case .confirmedGraphicsMatch(let graphicsID) = decision.status,
+                  let source = available.first(where: { $0.windowID == graphicsID }) else { continue }
+
+            let frame = geometry.first(where: { $0.id == graphicsID })?.frame ?? source.frame
+            let key = Key(identity: window.identity, revision: window.stateRevision, graphics: graphicsID,
                           frame: [Int(frame.minX.rounded()), Int(frame.minY.rounded()),
                                   Int(frame.width.rounded()), Int(frame.height.rounded())])
             if let saved = cache[key], Date().timeIntervalSince(saved.date) < 10 {
-                onImage(window.id, saved.image, true)
+                if await currentlyConfirmed(decision, graphicsID: graphicsID, baseline: windows,
+                                            instance: instance, accessibility: accessibility, stillCurrent: stillCurrent) {
+                    diagnose("captureCacheHit", window: window, candidates: [graphicsID])
+                    onImage(window, saved.image, true)
+                } else {
+                    cache.removeValue(forKey: key)
+                    continue
+                }
             }
-            guard stillCurrent(), !Task.isCancelled else { return }
+            guard stillCurrent(), !Task.isCancelled, processIsCurrent(instance) else { return }
             let config = SCStreamConfiguration()
             let scale = min(440 / max(source.frame.width, 1), 280 / max(source.frame.height, 1), 1)
             config.width = max(1, Int(source.frame.width * scale))
             config.height = max(1, Int(source.frame.height * scale))
             await acquire()
-            guard stillCurrent(), !Task.isCancelled else { release(); return }
+            guard stillCurrent(), !Task.isCancelled, processIsCurrent(instance) else { release(); return }
+            let captureStarted = Date()
+            diagnose("captureStarted", window: window, candidates: [graphicsID])
             do {
                 let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: source), configuration: config)
                 release()
-                guard stillCurrent(), !Task.isCancelled else { return }
+                guard await currentlyConfirmed(decision, graphicsID: graphicsID, baseline: windows,
+                                               instance: instance, accessibility: accessibility, stillCurrent: stillCurrent) else {
+                    diagnose("captureDiscardedStale", window: window, candidates: [graphicsID])
+                    continue
+                }
                 let picture = NSImage(cgImage: image, size: NSSize(width: CGFloat(image.width), height: CGFloat(image.height)))
                 let bytes = image.width * image.height * 4
                 cache[key] = Entry(image: picture, date: Date(), bytes: bytes)
                 trim()
-                onImage(window.id, picture, false)
+                diagnose("captureSucceeded", window: window, candidates: [graphicsID],
+                         detail: "elapsedMs=\(Int(Date().timeIntervalSince(captureStarted) * 1000))")
+                onImage(window, picture, false)
             } catch {
                 release()
-                // A protected, minimized or non-capturable window retains its AX card.
                 logger.error("ScreenCaptureKit capture failed for process \(instance.pid), AX window \(window.id.uuidString, privacy: .public), graphics window \(graphicsID): \(error.localizedDescription, privacy: .private)")
-                continue
+                diagnose("captureFailed", window: window, candidates: [graphicsID],
+                         detail: "elapsedMs=\(Int(Date().timeIntervalSince(captureStarted) * 1000))")
             }
         }
     }
