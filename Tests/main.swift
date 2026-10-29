@@ -238,6 +238,7 @@ let ambiguous = WindowMatcher.match([previewOne], to: [graphics[0], GraphicalWin
 check(ambiguous[previewOne.id] == .ambiguous, "ambiguous graphical candidates never select a thumbnail")
 check(AccessibilityPermissionStatus(trusted: false).explanation.contains("Process switching"), "permission presentation explains retained process features")
 try await testApplicationCatalog(check)
+try await testCommandLineProcessIcon(check)
 try await testPinMutations(check)
 try await testSettings(check)
 try testSystemDockRecovery(check)

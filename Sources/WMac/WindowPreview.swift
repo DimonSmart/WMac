@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import OSLog
 @preconcurrency import ScreenCaptureKit
 
 @MainActor
@@ -104,6 +105,7 @@ final class WindowPreviewController {
         let result = await runtime.accessibility.windows(for: id)
         guard !Task.isCancelled, generation == token, runtime.valid(capture),
               (explicit || (pointerOnButton && self.source === button)) else { return }
+        runtime.cacheMenuWindowResult(result, for: id)
         let windows: [WindowReference]
         let information: String?
         switch result {
@@ -243,7 +245,7 @@ private final class WindowPreviewPanel: NSPanel {
         isFloatingPanel = true
         hidesOnDeactivate = false
         isOpaque = false
-        backgroundColor = .windowBackgroundColor
+        backgroundColor = .clear
         hasShadow = true
         becomesKeyOnlyIfNeeded = true
     }
@@ -274,6 +276,7 @@ private final class WindowPreviewCard: NSButton {
     init(_ reference: WindowReference) {
         windowReference = reference
         super.init(frame: NSRect(x: 0, y: 0, width: 232, height: 190))
+        title = ""
         isBordered = false
         wantsLayer = true
         layer?.cornerRadius = 8
@@ -345,8 +348,12 @@ private final class WindowPreviewView: NSView {
         wantsLayer = true
         layer?.cornerRadius = 12
         layer?.masksToBounds = true
+        layer?.backgroundColor = NSColor.clear.cgColor
         let backdrop = NSVisualEffectView(frame: bounds)
         backdrop.autoresizingMask = [.width, .height]
+        backdrop.wantsLayer = true
+        backdrop.layer?.cornerRadius = 12
+        backdrop.layer?.masksToBounds = true
         backdrop.material = .popover
         backdrop.state = .active
         addSubview(backdrop)
@@ -444,6 +451,7 @@ private final class WindowPreviewView: NSView {
 
 @MainActor
 private final class WindowThumbnailService {
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "app.wmac.WMac", category: "WindowPreviews")
     private struct Key: Hashable { let instance: InstanceID; let window: UUID; let graphics: CGWindowID; let frame: [Int] }
     private struct Entry { let image: NSImage; let date: Date; let bytes: Int }
     private var cache: [Key: Entry] = [:]
@@ -470,14 +478,36 @@ private final class WindowThumbnailService {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
             available = content.windows.filter { $0.owningApplication?.processID == instance.pid }
-        } catch { return }
+        } catch {
+            logger.error("ScreenCaptureKit window enumeration failed for process \(instance.pid): \(error.localizedDescription, privacy: .private)")
+            return
+        }
 
-        let geometry = available.map { GraphicalWindow(id: $0.windowID, title: $0.title ?? "", frame: $0.frame) }
+        // AXPosition is global screen-space with a top-left origin. SCWindow.frame is
+        // documented relative to a display, so use the public Core Graphics bounds
+        // for that same window ID to compare geometry in the shared global space.
+        let globalBounds = await Task.detached(priority: .utility) {
+            Self.globalWindowBounds(processID: instance.pid)
+        }.value
+        let geometry = available.compactMap { source -> GraphicalWindow? in
+            guard let frame = globalBounds[source.windowID] else { return nil }
+            return GraphicalWindow(id: source.windowID, title: source.title ?? "", frame: frame)
+        }
         let associations = WindowMatcher.match(windows, to: geometry)
         for window in windows {
             guard !Task.isCancelled, stillCurrent() else { return }
-            guard case .matched(let graphicsID) = associations[window.id],
-                  let source = available.first(where: { $0.windowID == graphicsID }) else { continue }
+            guard let association = associations[window.id] else { continue }
+            let graphicsID: CGWindowID
+            switch association {
+            case .matched(let id): graphicsID = id
+            case .unmatched:
+                logger.info("No global window geometry matched process \(instance.pid), AX window \(window.id.uuidString, privacy: .public)")
+                continue
+            case .ambiguous:
+                logger.info("Window geometry was ambiguous for process \(instance.pid), AX window \(window.id.uuidString, privacy: .public)")
+                continue
+            }
+            guard let source = available.first(where: { $0.windowID == graphicsID }) else { continue }
             let frame = source.frame
             let key = Key(instance: instance, window: window.id, graphics: graphicsID,
                           frame: [Int(frame.minX.rounded()), Int(frame.minY.rounded()),
@@ -504,9 +534,25 @@ private final class WindowThumbnailService {
             } catch {
                 release()
                 // A protected, minimized or non-capturable window retains its AX card.
+                logger.error("ScreenCaptureKit capture failed for process \(instance.pid), AX window \(window.id.uuidString, privacy: .public), graphics window \(graphicsID): \(error.localizedDescription, privacy: .private)")
                 continue
             }
         }
+    }
+
+    private nonisolated static func globalWindowBounds(processID: pid_t) -> [CGWindowID: CGRect] {
+        guard let entries = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] else { return [:] }
+        var boundsByID: [CGWindowID: CGRect] = [:]
+        for entry in entries {
+            guard (entry[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == processID,
+                  let number = entry[kCGWindowNumber as String] as? NSNumber,
+                  let dictionary = entry[kCGWindowBounds as String] as? NSDictionary else { continue }
+            var frame = CGRect.zero
+            guard CGRectMakeWithDictionaryRepresentation(dictionary as CFDictionary, &frame),
+                  frame.width.isFinite, frame.height.isFinite, frame.width > 0, frame.height > 0 else { continue }
+            boundsByID[CGWindowID(number.uint32Value)] = frame
+        }
+        return boundsByID
     }
 
     private func trim() {

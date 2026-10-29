@@ -1,4 +1,42 @@
-import Foundation
+import AppKit
+
+enum PanelIconSource: Hashable, Sendable {
+    case application(AppDefinition)
+    case instance(InstanceID)
+
+    init?(_ button: TaskbarButton) {
+        if let application = button.application { self = .application(application) }
+        else if let instance = button.instance { self = .instance(instance.id) }
+        else { return nil }
+    }
+}
+
+/// System icon lookup and bounded rasterization stay off the UI actor.
+actor PanelIcons {
+    @MainActor static let fallback = NSImage(systemSymbolName: "app", accessibilityDescription: nil)
+        ?? NSImage(size: NSSize(width: 32, height: 32))
+
+    func icon(_ source: PanelIconSource) -> Data? {
+        let image: NSImage
+        switch source {
+        case .application(let definition):
+            image = NSWorkspace.shared.icon(forFile: definition.url.path)
+        case .instance(let id):
+            guard let app = NSRunningApplication(processIdentifier: id.pid), !app.isTerminated,
+                  ProcessLifetime.startDate(for: app) == id.startDate,
+                  let icon = app.icon else { return nil }
+            image = icon
+        }
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 96, pixelsHigh: 96,
+                                            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        image.draw(in: NSRect(x: 0, y: 0, width: 96, height: 96))
+        return bitmap.representation(using: .png, properties: [:])
+    }
+}
 
 struct DisplayLayout: Equatable {
     let id: UInt32

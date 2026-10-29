@@ -1,8 +1,9 @@
 import CoreGraphics
 import Foundation
 
-/// AX and ScreenCaptureKit supply independently identified windows. An unmatched
-/// card is safer than guessing from PID, title, or enumeration order alone.
+/// AX references and ScreenCaptureKit capture handles identify windows separately.
+/// Match against global kCGWindowBounds geometry so unmatched cards never guess
+/// from PID, title, or enumeration order alone.
 struct GraphicalWindow: Sendable {
     let id: CGWindowID
     let title: String

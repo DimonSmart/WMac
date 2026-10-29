@@ -33,11 +33,12 @@ func tr(_ en: String, _ ru: String) -> String {
     private var permissionExplained = false
     private var infoWindow: NSWindow?
     private let icons = PanelIcons()
-    private var images: [AppDefinition: NSImage] = [:]
-    private var loading = Set<AppDefinition>()
+    private var images: [PanelIconSource: NSImage] = [:]
+    private var loading = Set<PanelIconSource>()
     private var windowTitles: [InstanceID: String] = [:]
     private var titleRequest: (InstanceID, Date)?
     private var menuWindowCache: [InstanceID: (date: Date, result: WindowResult)] = [:]
+    private var menuWindowRefreshes: [InstanceID: UUID] = [:]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -95,6 +96,7 @@ func tr(_ en: String, _ ru: String) -> String {
         let snapshot = coordinator.snapshot
         let live = Set(snapshot.buttons.compactMap { $0.instance?.id })
         menuWindowCache = menuWindowCache.filter { live.contains($0.key) }
+        menuWindowRefreshes = menuWindowRefreshes.filter { live.contains($0.key) }
         windowTitles = windowTitles.filter { live.contains($0.key) }
         if accessibility.trusted, let active = snapshot.activeInstance,
            titleRequest?.0 != active || Date().timeIntervalSince(titleRequest?.1 ?? .distantPast) > 10 {
@@ -106,26 +108,51 @@ func tr(_ en: String, _ ru: String) -> String {
                 }
             }
         }
-        let definitions = Set(coordinator.snapshot.buttons.compactMap(\.application))
-        images = images.filter { definitions.contains($0.key) }
-        for definition in definitions where images[definition] == nil && !loading.contains(definition) {
-            loading.insert(definition)
+        let iconSources = Set(snapshot.buttons.compactMap(PanelIconSource.init))
+        images = images.filter { iconSources.contains($0.key) }
+        for source in iconSources where images[source] == nil && !loading.contains(source) {
+            loading.insert(source)
             Task {
-                let data = await icons.icon(definition)
-                loading.remove(definition)
-                if let data, definitions.contains(definition) { images[definition] = NSImage(data: data) }
+                let data = await icons.icon(source)
+                loading.remove(source)
+                if let data, coordinator.snapshot.buttons.contains(where: { PanelIconSource($0) == source }) {
+                    images[source] = NSImage(data: data)
+                }
                 displays.render(coordinator.snapshot)
             }
         }
         displays.render(coordinator.snapshot)
         previews.reconcile()
     }
-    func image(_ definition: AppDefinition?) -> NSImage? { definition.flatMap { images[$0] } ?? NSImage(named: NSImage.applicationIconName) }
+    func image(_ button: TaskbarButton) -> NSImage { PanelIconSource(button).flatMap { images[$0] } ?? PanelIcons.fallback }
     func windowTitle(_ id: InstanceID?) -> String? { id.flatMap { windowTitles[$0] } }
     func pendingCount(_ definition: AppDefinition?) -> Int { definition.flatMap { pending[$0] } ?? 0 }
     func valid(_ capture: ButtonCapture) -> Bool {
         guard capture.matches(coordinator.snapshot) else { return false }
         return capture.instance.map { monitor.running($0) != nil } ?? true
+    }
+    func cacheMenuWindowResult(_ result: WindowResult, for id: InstanceID) {
+        menuWindowRefreshes[id] = nil
+        guard monitor.running(id) != nil else {
+            menuWindowCache[id] = nil
+            return
+        }
+        menuWindowCache[id] = (Date(), result)
+    }
+    private func refreshMenuWindows(for id: InstanceID) {
+        guard menuWindowRefreshes[id] == nil else { return }
+        let token = UUID()
+        menuWindowRefreshes[id] = token
+        let service = accessibility
+        Task.detached(priority: .userInitiated) { [weak self, service] in
+            let result = await service.windows(for: id)
+            await self?.finishMenuWindowRefresh(result, for: id, token: token)
+        }
+    }
+    private func finishMenuWindowRefresh(_ result: WindowResult, for id: InstanceID, token: UUID) {
+        guard menuWindowRefreshes[id] == token else { return }
+        menuWindowRefreshes[id] = nil
+        cacheMenuWindowResult(result, for: id)
     }
     func click(_ capture: ButtonCapture, new: Bool) {
         guard valid(capture) else { notify(tr("This instance is no longer available", "Экземпляр больше недоступен")); return }
@@ -356,7 +383,7 @@ func tr(_ en: String, _ ru: String) -> String {
             let submenu = NSMenu(title: tr("Windows", "Окна"))
             // Build a complete immutable snapshot BEFORE native menu tracking.
             // Async refresh is cached for a subsequent opening, not applied to a live NSMenu.
-            if let cached = menuWindowCache[id], Date().timeIntervalSince(cached.date) < 5 {
+            if let cached = menuWindowCache[id], Date().timeIntervalSince(cached.date) < 15 {
                 switch cached.result {
                 case .unavailable(let reason):
                     let unavailable = submenu.addItem(withTitle: tr("Windows unavailable", "Окна недоступны"), action: nil, keyEquivalent: "")
@@ -376,11 +403,7 @@ func tr(_ en: String, _ ru: String) -> String {
             } else {
                 let loading = submenu.addItem(withTitle: tr("Loading… reopen to see windows", "Загрузка… откройте меню повторно"), action: nil, keyEquivalent: "")
                 loading.isEnabled = false
-                Task { [weak self] in
-                    guard let self else { return }
-                    let result = await accessibility.windows(for: id)
-                    if valid(capture) { menuWindowCache[id] = (Date(), result) }
-                }
+                refreshMenuWindows(for: id)
             }
             let parent = NSMenuItem(title: submenu.title, action: nil, keyEquivalent: "")
             parent.submenu = submenu; menu.addItem(parent)
@@ -445,16 +468,6 @@ func tr(_ en: String, _ ru: String) -> String {
     func applicationWillTerminate(_ notification: Notification) { previews.close(); dockVisibility.restore(); clock?.invalidate(); monitor.stop(); displays.close(); for token in tokens { NotificationCenter.default.removeObserver(token) } }
 }
 private struct MenuCommand { let capture: ButtonCapture; let action: String; let window: WindowReference? }
-
-/// Bounded, background icon rasterization. No system icon/filesystem calls in refresh rendering.
-private actor PanelIcons {
-    func icon(_ definition: AppDefinition) -> Data? {
-        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 96, pixelsHigh: 96, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-        NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
-        NSWorkspace.shared.icon(forFile: definition.url.path).draw(in: NSRect(x: 0, y: 0, width: 96, height: 96))
-        NSGraphicsContext.restoreGraphicsState(); return bitmap.representation(using: .png, properties: [:])
-    }
-}
 
 @MainActor final class DisplayCoordinator {
     unowned let runtime: TaskbarDelegate
@@ -635,9 +648,9 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
     override func mouseExited(with event: NSEvent) { runtime.previews.exited(self) }
     func update(_ value: TaskbarButton, iconSize: CGFloat) {
         capture = ButtonCapture(value)
-        let source = runtime.image(value.application)
+        let source = runtime.image(value)
         if source !== iconSource || displayedIconSize != iconSize {
-            let resized = source?.copy() as? NSImage
+            let resized = source.copy() as? NSImage
             resized?.size = NSSize(width: iconSize, height: iconSize)
             image = resized; iconSource = source; displayedIconSize = iconSize
         }
