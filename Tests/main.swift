@@ -224,7 +224,12 @@ if case .windows(let initial) = await windowService.windows(for: windowInstance)
     let beforeReads = controlled.lock.withLock { controlled.reads }
     let noAccess = await windowService.switchTo(windowInstance)
     check(noAccess.outcome == .activatedOnly && noAccess.activationAccepted && controlled.lock.withLock { controlled.reads == beforeReads }, "controlled unavailable permission skips AX and retains process activation")
-    controlled.edit { $0.allowed = true; $0.alive = false }
+    controlled.edit { $0.allowed = true }
+    if case .windows(let afterPermissionReturn) = await windowService.windows(for: windowInstance) {
+        check(afterPermissionReturn.first?.identity == initial[1].identity,
+              "temporary Accessibility permission loss preserves the known semantic window")
+    } else { check(false, "Accessibility permission recovery must resume enumeration") }
+    controlled.edit { $0.alive = false }
     let terminated = await windowService.select(initial[1])
     check(terminated.outcome == .unavailable && !terminated.activationAccepted, "terminated lifetime rejects both AX and process actions")
     controlled.edit { $0.alive = true; $0.activation = false }
@@ -267,6 +272,23 @@ check(WindowMatcher.resolve([previewOne], to: graphics, sourcesAvailable: false)
 let foreign = GraphicalWindow(id: 99, title: "Same", frame: previewOne.frame!, processID: windowInstance.pid + 1)
 check(WindowMatcher.match([previewOne], to: [foreign])[previewOne.id] == .unmatched,
       "graphical windows from another PID cannot be used")
+let changedTitle = WindowReference(id: previewOne.id, instance: previewOne.instance, title: "Renamed",
+                                   isMinimized: false, isFocused: true, canMinimize: true,
+                                   frame: previewOne.frame, lifecycle: 7, stateRevision: 2)
+let changedFrame = WindowReference(id: previewOne.id, instance: previewOne.instance, title: "Same",
+                                   isMinimized: false, isFocused: true, canMinimize: true,
+                                   frame: CGRect(x: -950, y: 50, width: 700, height: 420),
+                                   lifecycle: 7, stateRevision: 2)
+check(changedTitle.captureState != changedFrame.captureState &&
+      changedTitle.captureState != previewOne.captureState,
+      "async image tokens reject changed title, geometry or lifecycle")
+let reusedPID = InstanceID(pid: windowInstance.pid, startDate: windowInstance.startDate.addingTimeInterval(60))
+let reusedWindow = WindowReference(id: previewOne.id, instance: reusedPID, title: previewOne.title,
+                                   isMinimized: false, isFocused: true, canMinimize: true,
+                                   frame: previewOne.frame, lifecycle: previewOne.lifecycle,
+                                   stateRevision: previewOne.stateRevision)
+check(reusedWindow.identity != previewOne.identity,
+      "PID reuse cannot preserve semantic or graphical window identity")
 check(AccessibilityPermissionStatus(trusted: false).explanation.contains("Process switching"), "permission presentation explains retained process features")
 try await testApplicationCatalog(check)
 try await testCommandLineProcessIcon(check)
