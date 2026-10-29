@@ -26,6 +26,7 @@ struct WMacSettings: Codable, Equatable, Sendable {
     var hoverPreviews: HoverPreviewMode = .automatic
     var showWindowThumbnails = true
     var appPreviewPreferences: [AppPreviewPreference] = []
+    var windowArrangementShortcuts = false
 
     func hoverMode(for app: AppDefinition?) -> HoverPreviewMode {
         guard let app, let mode = appPreviewPreferences.first(where: { $0.application == app })?.mode else { return hoverPreviews }
@@ -45,7 +46,7 @@ struct WMacSettings: Codable, Equatable, Sendable {
 
     init() {}
     enum CodingKeys: String, CodingKey {
-        case allDisplays, height, opacity, theme, middleClick, exclusions, dockGuidanceSeen, hideSystemDock, hoverPreviews, showWindowThumbnails, appPreviewPreferences
+        case allDisplays, height, opacity, theme, middleClick, exclusions, dockGuidanceSeen, hideSystemDock, hoverPreviews, showWindowThumbnails, appPreviewPreferences, windowArrangementShortcuts
     }
     init(from decoder: Decoder) throws {
         self.init()
@@ -61,6 +62,7 @@ struct WMacSettings: Codable, Equatable, Sendable {
         hoverPreviews = try c.decodeIfPresent(HoverPreviewMode.self, forKey: .hoverPreviews) ?? .automatic
         showWindowThumbnails = try c.decodeIfPresent(Bool.self, forKey: .showWindowThumbnails) ?? true
         appPreviewPreferences = try c.decodeIfPresent([AppPreviewPreference].self, forKey: .appPreviewPreferences) ?? []
+        windowArrangementShortcuts = try c.decodeIfPresent(Bool.self, forKey: .windowArrangementShortcuts) ?? false
     }
     func validated() throws -> Self {
         guard height.isFinite, (40...64).contains(height), opacity.isFinite, (0.35...1).contains(opacity),

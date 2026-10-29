@@ -113,6 +113,11 @@ import ServiceManagement
         behavior.addArrangedSubview(text(tr("Shift-click always requests a new independent instance.", "Shift + клик всегда запрашивает новый независимый экземпляр.")))
         toggle(behavior, tr("Middle-click requests a new instance", "Средний клик запрашивает новый экземпляр"), value.middleClick) { [weak self] on in self?.runtime.settings.edit { $0.middleClick = on } }
         behavior.addArrangedSubview(text(tr("Click an instance to switch to it; click the active instance again to minimize its window. Window control requires Accessibility. Without it, the exact process is activated.", "Нажмите на экземпляр, чтобы переключиться на него; повторное нажатие на активный экземпляр свернёт его окно. Для управления окнами нужен Универсальный доступ. Без него активируется точный процесс.")))
+        toggle(behavior, tr("Enable window arrangement shortcuts", "Включить сочетания для расположения окон"), value.windowArrangementShortcuts) { [weak self] on in
+            self?.runtime.settings.edit { $0.windowArrangementShortcuts = on }
+        }
+        behavior.addArrangedSubview(text(tr("Control+Option+arrows place the current window; U/I/J/K choose corners; D/F/G and E/R/T choose thirds; Enter maximizes; Shift+Up maximizes height; = and - resize; C centers; Delete restores. Requires Accessibility.", "Control+Option+стрелки размещают текущее окно; U/I/J/K выбирают углы; D/F/G и E/R/T — трети; Enter разворачивает; Shift+↑ растягивает по высоте; = и - меняют размер; C центрирует; Delete восстанавливает. Нужен Универсальный доступ.")))
+        if let status = runtime.windowArrangementShortcuts.statusMessage { behavior.addArrangedSubview(text(status)) }
         let previews = section(tr("Window Previews", "Предпросмотр окон"))
         previews.addArrangedSubview(text(tr("Show window cards after hovering over a running instance for 450 ms.", "Показывать карточки окон спустя 450 мс наведения на запущенный экземпляр.")))
         let hover = NSPopUpButton()

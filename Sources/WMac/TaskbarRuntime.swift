@@ -16,6 +16,7 @@ func tr(_ en: String, _ ru: String) -> String {
     lazy var launcher = LaunchService(monitor: monitor)
     lazy var displays = DisplayCoordinator(runtime: self)
     lazy var previews = WindowPreviewController(runtime: self)
+    lazy var windowArrangementShortcuts = WindowArrangementShortcuts(accessibility: accessibility, permissions: permissions)
     let settings = SettingsController()
     let dockVisibility = SystemDockVisibilityService()
     private var dockAttempted = false
@@ -71,10 +72,13 @@ func tr(_ en: String, _ ru: String) -> String {
             } else { notify(tr("Pins updated", "Закрепления обновлены")) }
             settingsWindow.refresh()
         }
+        windowArrangementShortcuts.changed = { [weak self] in self?.settingsWindow.refresh() }
+        windowArrangementShortcuts.notify = { [weak self] title, details in self?.notify(title, details) }
         settings.changed = { [weak self] in
             guard let self else { return }
             coordinator.setExclusions(Set(settings.value.exclusions)); displays.reconcile()
             previews.settingsChanged()
+            if settings.ready { windowArrangementShortcuts.setEnabled(settings.value.windowArrangementShortcuts) }
             synchronizeDockVisibility()
             settingsWindow.refresh()
             if let error = settings.failure { notify(tr("Settings recovery needed", "Нужно восстановить настройки"), error) }

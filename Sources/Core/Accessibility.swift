@@ -16,7 +16,7 @@ enum WindowResult: Sendable {
 }
 enum WindowAction: Sendable { case restore, minimize }
 struct WindowActionResult: Sendable {
-    enum Outcome: Sendable { case restored, minimized, noManageableWindows, activatedOnly, unavailable }
+    enum Outcome: Equatable, Sendable { case restored, minimized, arranged, noManageableWindows, activatedOnly, unavailable }
     let outcome: Outcome
     let message: String
     let activationAccepted: Bool
@@ -227,6 +227,65 @@ final class AccessibilityService: @unchecked Sendable {
     }
     func windows(for instance: InstanceID) async -> WindowResult {
         await withCheckedContinuation { continuation in queue.async { continuation.resume(returning: self.refresh(instance)) } }
+    }
+    func arrange(_ instance: InstanceID, windowID: UUID, frame: CGRect) async -> WindowActionResult {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                func result(_ outcome: WindowActionResult.Outcome, _ message: String) -> WindowActionResult {
+                    WindowActionResult(outcome: outcome, message: message, activationAccepted: outcome == .arranged)
+                }
+                guard frame.minX.isFinite, frame.minY.isFinite, frame.width.isFinite, frame.height.isFinite,
+                      frame.width > 0, frame.height > 0 else {
+                    continuation.resume(returning: result(.unavailable, "The requested window geometry is invalid.")); return
+                }
+                guard self.boundary.trusted() else {
+                    continuation.resume(returning: result(.unavailable, "Window arrangement needs Accessibility permission.")); return
+                }
+                guard case .windows = self.refresh(instance), let state = self.states[instance],
+                      let record = state.records.first(where: { $0.snapshot.id == windowID && $0.snapshot.isFocused && !$0.snapshot.isMinimized }) else {
+                    continuation.resume(returning: result(.unavailable, "The focused window changed or is no longer manageable.")); return
+                }
+                func stillFocused() -> Bool {
+                    guard self.boundary.live(instance) else { return false }
+                    let system = AXUIElementCreateSystemWide()
+                    var appValue: CFTypeRef?
+                    guard AXUIElementCopyAttributeValue(system, kAXFocusedApplicationAttribute as CFString, &appValue) == .success,
+                          let appValue, CFGetTypeID(appValue) == AXUIElementGetTypeID() else { return false }
+                    let app = appValue as! AXUIElement
+                    var pid: pid_t = 0
+                    guard AXUIElementGetPid(app, &pid) == .success, pid == instance.pid else { return false }
+                    var windowValue: CFTypeRef?
+                    return AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &windowValue) == .success
+                        && windowValue.map { CFEqual($0, record.element) } == true
+                }
+                guard stillFocused() else {
+                    continuation.resume(returning: result(.unavailable, "The focused window changed before arrangement.")); return
+                }
+                AXUIElementSetMessagingTimeout(record.element, 0.5)
+                var positionSettable = DarwinBoolean(false), sizeSettable = DarwinBoolean(false)
+                let positionCheck = AXUIElementIsAttributeSettable(record.element, kAXPositionAttribute as CFString, &positionSettable)
+                let sizeCheck = AXUIElementIsAttributeSettable(record.element, kAXSizeAttribute as CFString, &sizeSettable)
+                guard positionCheck == .success, sizeCheck == .success, positionSettable.boolValue, sizeSettable.boolValue else {
+                    continuation.resume(returning: result(.unavailable, "This application does not allow the focused window to be moved and resized.")); return
+                }
+                var origin = frame.origin, size = frame.size
+                guard let position = AXValueCreate(.cgPoint, &origin), let dimensions = AXValueCreate(.cgSize, &size) else {
+                    continuation.resume(returning: result(.unavailable, "Could not encode the requested window geometry.")); return
+                }
+                let sizeResult = AXUIElementSetAttributeValue(record.element, kAXSizeAttribute as CFString, dimensions)
+                guard sizeResult == .success else {
+                    continuation.resume(returning: result(.unavailable, "The application rejected the requested window size (AX \(sizeResult.rawValue)).")); return
+                }
+                guard stillFocused() else {
+                    continuation.resume(returning: result(.unavailable, "The focused window changed while its size was being updated.")); return
+                }
+                let positionResult = AXUIElementSetAttributeValue(record.element, kAXPositionAttribute as CFString, position)
+                guard positionResult == .success else {
+                    continuation.resume(returning: result(.unavailable, "The application accepted the size but rejected the position (AX \(positionResult.rawValue)).")); return
+                }
+                continuation.resume(returning: result(.arranged, "Window arranged."))
+            }
+        }
     }
     // Optional independent observer for diagnostics. Caller owns its lifetime.
     func observe(_ instance: InstanceID, changed: @escaping @Sendable () -> Void) async -> WindowObservation? {
