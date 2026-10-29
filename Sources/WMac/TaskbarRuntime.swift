@@ -348,20 +348,18 @@ func tr(_ en: String, _ ru: String) -> String {
     }
     func contextMenu(_ capture: ButtonCapture) -> NSMenu {
         let menu = NSMenu()
-        func action(_ en: String, _ ru: String, _ command: String, window: WindowReference? = nil) {
+        func action(_ en: String, _ ru: String, _ command: String) {
             let item = NSMenuItem(title: tr(en, ru), action: #selector(menuAction(_:)), keyEquivalent: "")
             item.target = self
-            item.representedObject = MenuCommand(capture: capture, action: command, window: window)
-            if command == "window", let window { item.state = window.isFocused ? .on : .off }
+            item.representedObject = MenuCommand(capture: capture, action: command)
             menu.addItem(item)
         }
         func separator() { menu.addItem(.separator()) }
         action(capture.instance == nil ? "Open" : "Switch", capture.instance == nil ? "Открыть" : "Переключиться", "switch")
         action("New instance", "Новый экземпляр", "new")
-        if let id = capture.instance {
+        if capture.instance != nil {
             action("Windows…", "Окна…", "preview")
             separator()
-            action("Hide", "Скрыть", "hide")            separator()
             action("Hide", "Скрыть", "hide")
             action("Terminate this instance", "Завершить этот экземпляр", "terminate")
             action("Force terminate…", "Завершить принудительно…", "force")
@@ -394,9 +392,6 @@ func tr(_ en: String, _ ru: String) -> String {
         case "switch": click(capture, new: false)
         case "new": click(capture, new: true)
         case "preview": previews.openExplicit(capture)
-        case "window":
-            explainPermission()
-            if let window = command.window { Task { guard valid(capture) else { return }; let result = await accessibility.select(window); if result.outcome == .activatedOnly || result.outcome == .unavailable { notify(tr("Window action limited", "Действие окна ограничено"), result.message) } } }
         case "hide": if let id = capture.instance { _ = monitor.running(id)?.hide(); previews.close() }
         case "terminate": if let id = capture.instance { _ = monitor.terminate(id); previews.close() }
         case "force":
@@ -419,7 +414,7 @@ func tr(_ en: String, _ ru: String) -> String {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationWillTerminate(_ notification: Notification) { previews.close(); dockVisibility.restore(); clock?.invalidate(); monitor.stop(); displays.close(); for token in tokens { NotificationCenter.default.removeObserver(token) } }
 }
-private struct MenuCommand { let capture: ButtonCapture; let action: String; let window: WindowReference? }
+private struct MenuCommand { let capture: ButtonCapture; let action: String }
 
 @MainActor final class DisplayCoordinator {
     unowned let runtime: TaskbarDelegate

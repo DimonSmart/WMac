@@ -175,7 +175,7 @@ import ServiceManagement
             previews.addArrangedSubview(choice)
         }
         let apps = section(tr("Applications", "Приложения"))
-        apps.addArrangedSubview(text(tr("Pinned applications — use each menu to reorder, unpin or relink:", "Закрепления — меню позволяет изменить порядок, открепить или восстановить путь:")))
+        apps.addArrangedSubview(text(tr("Pinned applications — reorder, unpin or relink below:", "Закрепления — здесь можно изменить порядок, открепить или восстановить путь:")))
         for (index, pin) in runtime.coordinator.pins.enumerated() {
             let row = NSStackView()
             row.orientation = .horizontal
@@ -199,7 +199,7 @@ import ServiceManagement
             }
             apps.addArrangedSubview(row)
         }
-                apps.addArrangedSubview(text(tr("Exclusions hide both running buttons and pins; saved pins remain intact.", "Исключения скрывают процессы и закрепления; сохранённые закрепления остаются.")))
+        apps.addArrangedSubview(text(tr("Exclusions hide both running buttons and pins; saved pins remain intact.", "Исключения скрывают процессы и закрепления; сохранённые закрепления остаются.")))
         button(apps, tr("Exclude application…", "Исключить приложение…")) { [weak self] in self?.excludeApplication() }
         for definition in value.exclusions {
             button(apps, tr("Restore: ", "Вернуть: ") + definition.url.path) { [weak self] in self?.runtime.settings.edit { $0.exclusions.removeAll { $0 == definition } } }
