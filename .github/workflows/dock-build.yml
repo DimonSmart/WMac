@@ -22,6 +22,9 @@ jobs:
       - name: Build WMac and embedded watchdog
         run: |
           xcodebuild -project WMac.xcodeproj -target WMac -configuration Debug SYMROOT="$RUNNER_TEMP/WMacProducts" OBJROOT="$RUNNER_TEMP/WMacObjects" CODE_SIGNING_ALLOWED=NO build
+      - name: Build test fixture
+        run: |
+          xcodebuild -project WMac.xcodeproj -target WMacMultiFixture -configuration Debug SYMROOT="$PWD/.build/products" OBJROOT="$RUNNER_TEMP/WMacFixtureObjects" CODE_SIGNING_ALLOWED=NO build
       - name: Run model checks (without modifying Dock)
         run: |
           mkdir -p .build/tests
