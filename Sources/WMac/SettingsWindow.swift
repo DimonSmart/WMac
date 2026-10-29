@@ -254,20 +254,7 @@ import ServiceManagement
         }
     }
     private func confirmDockHiding() {
-        let alert = NSAlert()
-        alert.messageText = tr("Hide system Dock?", "Скрыть системный Dock?")
-        alert.informativeText = tr(
-            "WMac will change the system Dock's auto-hide preferences. Their original values will be saved and restored when this option is disabled or WMac quits. The Dock will restart to apply the changes.",
-            "WMac изменит настройки автоматического скрытия системного Dock. Исходные значения будут сохранены и восстановлены при отключении этой функции или завершении WMac. Для применения настроек системный Dock будет перезапущен.")
-        alert.addButton(withTitle: tr("Enable", "Включить"))
-        alert.addButton(withTitle: tr("Cancel", "Отмена"))
-        guard let window else { refresh(); return }
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard let self else { return }
-            if response == .alertFirstButtonReturn {
-                self.runtime.settings.edit { $0.hideSystemDock = true }
-            } else { self.refresh() }
-        }
+        runtime.confirmDockHiding(sheetFor: window) { [weak self] in self?.refresh() }
     }
     private func confirmReset(recovery: Bool) {
         let alert = NSAlert(); alert.messageText = tr("Restore default settings?", "Восстановить исходные настройки?")

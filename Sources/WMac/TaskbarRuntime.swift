@@ -20,6 +20,7 @@ func tr(_ en: String, _ ru: String) -> String {
     let settings = SettingsController()
     let dockVisibility = SystemDockVisibilityService()
     private var dockAttempted = false
+    private var dockManuallyRestored = false
     lazy var settingsWindow = SettingsWindowController(runtime: self)
     private lazy var aboutWindow = AboutWindowController()
     var preferences: PanelPreferences { PanelPreferences(middleClickNewInstance: settings.value.middleClick) }
@@ -80,6 +81,7 @@ func tr(_ en: String, _ ru: String) -> String {
             if settings.ready { windowArrangementShortcuts.setEnabled(settings.value.windowArrangementShortcuts) }
             synchronizeDockVisibility()
             settingsWindow.refresh()
+            refreshMenus()
             if let error = settings.failure { notify(tr("Settings recovery needed", "Нужно восстановить настройки"), error) }
             if settings.ready && !settings.value.dockGuidanceSeen {
                 settings.edit { $0.dockGuidanceSeen = true }
@@ -261,6 +263,8 @@ func tr(_ en: String, _ ru: String) -> String {
         item("Settings…", "Настройки…", #selector(showSettings), key: ",")
         item("Help", "Справка", #selector(instructions))
         menu.addItem(.separator())
+        addSystemDockCommands(to: menu)
+        menu.addItem(.separator())
         item("Quit WMac!", "Выйти из WMac!", #selector(quit), key: "q")
         return menu
     }
@@ -272,9 +276,7 @@ func tr(_ en: String, _ ru: String) -> String {
             menu.addItem(value)
         }
         item(displays.hidden ? "Show taskbars" : "Hide taskbars", displays.hidden ? "Показать панели" : "Скрыть панели", #selector(togglePanels))
-        if dockVisibility.needsRecovery {
-            item("Restore system Dock", "Восстановить системный Dock", #selector(restoreSystemDock))
-        }
+        addSystemDockCommands(to: menu)
         if pinMutations.failure != nil {
             item("Retry pins", "Повторить сохранение закреплений", #selector(retryPins))
         }
@@ -286,13 +288,28 @@ func tr(_ en: String, _ ru: String) -> String {
         item("Quit WMac!", "Выйти из WMac!", #selector(quit), key: "q")
         return menu
     }
+    private func addSystemDockCommands(to menu: NSMenu) {
+        let hide = NSMenuItem(title: tr("Hide system Dock", "Скрыть системный Dock"),
+                              action: #selector(hideSystemDock), keyEquivalent: "")
+        hide.target = self
+        hide.isEnabled = settings.ready && displays.hasUsablePanels &&
+            !dockVisibility.active && !dockVisibility.needsRecovery
+        menu.addItem(hide)
+
+        let restore = NSMenuItem(title: tr("Restore system Dock", "Восстановить системный Dock"),
+                                 action: #selector(restoreSystemDock), keyEquivalent: "")
+        restore.target = self
+        restore.isEnabled = dockVisibility.needsRecovery || (settings.ready && settings.value.hideSystemDock)
+        menu.addItem(restore)
+    }
     private func refreshMenus() {
         status.menu = controlsMenu()
         NSApp.mainMenu?.items.first?.submenu = applicationMenu()
     }
     private func synchronizeDockVisibility() {
         guard settings.ready else { return }
-        if !settings.value.hideSystemDock || displays.hidden {
+        if !settings.value.hideSystemDock { dockManuallyRestored = false }
+        if dockManuallyRestored || !settings.value.hideSystemDock || displays.hidden {
             if dockVisibility.needsRecovery { dockVisibility.restore() }
             dockAttempted = false
         } else if !dockAttempted && displays.hasUsablePanels {
@@ -300,7 +317,48 @@ func tr(_ en: String, _ ru: String) -> String {
             dockVisibility.enable(panelsReady: true)
         }
     }
+    @objc func hideSystemDock() {
+        guard settings.ready, displays.hasUsablePanels,
+              !dockVisibility.active, !dockVisibility.needsRecovery else { return }
+        if settings.value.hideSystemDock {
+            dockManuallyRestored = false
+            dockAttempted = false
+            synchronizeDockVisibility()
+            refreshMenus()
+        } else {
+            confirmDockHiding()
+        }
+    }
+    func confirmDockHiding(sheetFor window: NSWindow? = nil, onCancel: (() -> Void)? = nil) {
+        guard settings.ready else { onCancel?(); return }
+        let alert = NSAlert()
+        alert.messageText = tr("Hide system Dock?", "Скрыть системный Dock?")
+        alert.informativeText = tr(
+            "WMac will change the system Dock's auto-hide preferences. Their original values will be saved and restored when this option is disabled or WMac quits. The Dock will restart to apply the changes.",
+            "WMac изменит настройки автоматического скрытия системного Dock. Исходные значения будут сохранены и восстановлены при отключении этой функции или завершении WMac. Для применения настроек системный Dock будет перезапущен.")
+        alert.addButton(withTitle: tr("Enable", "Включить"))
+        alert.addButton(withTitle: tr("Cancel", "Отмена"))
+        let complete: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self else { return }
+            if response == .alertFirstButtonReturn {
+                self.dockManuallyRestored = false
+                self.dockAttempted = false
+                self.settings.edit { $0.hideSystemDock = true }
+            } else { onCancel?() }
+        }
+        if let window, window.isVisible {
+            alert.beginSheetModal(for: window, completionHandler: complete)
+        } else {
+            let wasAccessory = NSApp.activationPolicy() == .accessory
+            if wasAccessory { NSApp.setActivationPolicy(.regular) }
+            NSApp.activate()
+            let response = alert.runModal()
+            if wasAccessory { NSApp.setActivationPolicy(.accessory) }
+            complete(response)
+        }
+    }
     @objc func restoreSystemDock() {
+        dockManuallyRestored = true
         dockVisibility.restore()
         dockAttempted = false
         if settings.ready { settings.edit { $0.hideSystemDock = false } }
