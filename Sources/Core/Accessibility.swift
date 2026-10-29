@@ -1,6 +1,20 @@
 import AppKit
 @preconcurrency import ApplicationServices
 
+struct WindowIdentity: Hashable, Sendable {
+    let instance: InstanceID
+    let axID: UUID
+    let lifecycle: UInt64
+}
+
+struct WindowCaptureState: Equatable, Sendable {
+    let identity: WindowIdentity
+    let revision: UInt64
+    let title: String
+    let frame: CGRect?
+    let minimized: Bool
+}
+
 struct WindowReference: Identifiable, Equatable, Sendable {
     let id: UUID
     let instance: InstanceID
@@ -9,6 +23,16 @@ struct WindowReference: Identifiable, Equatable, Sendable {
     let isFocused: Bool
     let canMinimize: Bool
     var frame: CGRect? = nil
+    var lifecycle: UInt64 = 0
+    var stateRevision: UInt64 = 0
+    var role: String? = nil
+    var subrole: String? = nil
+
+    var identity: WindowIdentity { WindowIdentity(instance: instance, axID: id, lifecycle: lifecycle) }
+    var captureState: WindowCaptureState {
+        WindowCaptureState(identity: identity, revision: stateRevision, title: title,
+                           frame: frame, minimized: isMinimized)
+    }
 }
 enum WindowResult: Sendable {
     case windows([WindowReference])
@@ -51,6 +75,8 @@ struct AXWindowValue: @unchecked Sendable {
     let focused: Bool
     let canMinimize: Bool
     var frame: CGRect? = nil
+    var role: String? = nil
+    var subrole: String? = nil
 }
 struct AccessibilityBoundary: Sendable {
     var observesWindows = true
@@ -112,7 +138,8 @@ struct AccessibilityBoundary: Sendable {
                 }
             }
             windows.append(AXWindowValue(element: element, title: title as? String ?? "Window", minimized: minimized as? Bool ?? false,
-                                         focused: focused.map { CFEqual($0, element) } ?? false, canMinimize: settable.boolValue, frame: frame))
+                                         focused: focused.map { CFEqual($0, element) } ?? false, canMinimize: settable.boolValue, frame: frame,
+                                         role: kAXWindowRole as String, subrole: subrole as? String))
         }
         return .success(windows)
     }
@@ -167,6 +194,9 @@ final class AccessibilityService: @unchecked Sendable {
     }
     // Access only on queue. A returned snapshot contains no actionable AX object.
     private var states: [InstanceID: State] = [:]
+    // Queue-confined, monotonically allocated even after a process is invalidated.
+    private var nextWindowLifecycle: UInt64 = 0
+    private var nextObservedRevision: UInt64 = 0
     private var observations: [InstanceID: WindowObservation] = [:]
     private var processTokens: [NSObjectProtocol] = []
     var trusted: Bool { boundary.trusted() }
@@ -195,7 +225,10 @@ final class AccessibilityService: @unchecked Sendable {
     }
     private func refresh(_ id: InstanceID) -> WindowResult {
         guard boundary.live(id) else { invalidate(id); return .unavailable("Process lifetime no longer matches.") }
-        guard boundary.trusted() else { invalidate(id); return .unavailable("Accessibility unavailable. Process activation remains available.") }
+        guard boundary.trusted() else {
+            // Missing permission is unknown state, not evidence that the AX windows closed.
+            return .unavailable("Accessibility unavailable. Process activation remains available.")
+        }
         switch boundary.read(id) {
         case .failure(let error):
             // A transient timeout (for example during minimization animation) is
@@ -205,11 +238,27 @@ final class AccessibilityService: @unchecked Sendable {
         case .success(let values):
             guard boundary.live(id) else { invalidate(id); return .unavailable("Process exited during enumeration.") }
             var state = states[id] ?? State()
-            state.records = values.map { value in
-                let key = state.records.first { CFEqual($0.element, value.element) }?.snapshot.id ?? UUID()
-                return Record(snapshot: WindowReference(id: key, instance: id, title: value.title, isMinimized: value.minimized,
-                                                       isFocused: value.focused, canMinimize: value.canMinimize, frame: value.frame), element: value.element)
+            let previous = state.records
+            var refreshed: [Record] = []
+            for value in values {
+                // Duplicate AX handles are one semantic window, never two competing cards.
+                guard !refreshed.contains(where: { CFEqual($0.element, value.element) }) else { continue }
+                let old = previous.first { CFEqual($0.element, value.element) }?.snapshot
+                if old == nil { nextWindowLifecycle &+= 1 }
+                let lifecycle = old?.lifecycle ?? nextWindowLifecycle
+                let changed = old == nil || old?.title != value.title || old?.frame != value.frame ||
+                    old?.isMinimized != value.minimized || old?.isFocused != value.focused ||
+                    old?.canMinimize != value.canMinimize || old?.role != value.role || old?.subrole != value.subrole
+                if changed { nextObservedRevision &+= 1 }
+                let snapshot = WindowReference(id: old?.id ?? UUID(), instance: id, title: value.title,
+                                               isMinimized: value.minimized, isFocused: value.focused,
+                                               canMinimize: value.canMinimize, frame: value.frame,
+                                               lifecycle: lifecycle,
+                                               stateRevision: changed ? nextObservedRevision : (old?.stateRevision ?? 0),
+                                               role: value.role, subrole: value.subrole)
+                refreshed.append(Record(snapshot: snapshot, element: value.element))
             }
+            state.records = refreshed
             let keys = Set(state.records.map { $0.snapshot.id })
             if let last = state.lastActive, !keys.contains(last) { state.lastActive = nil }
             if let toggled = state.minimizedByToggle, !keys.contains(toggled) { state.minimizedByToggle = nil }

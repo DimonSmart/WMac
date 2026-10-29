@@ -185,8 +185,14 @@ if case .windows(let initial) = await windowService.windows(for: windowInstance)
     check(initial.count == 2 && initial[0].id != initial[1].id, "equal titles retain distinct actual AX identities")
     if case .windows(let repeated) = await windowService.windows(for: windowInstance) {
         check(initial.map(\.id) == repeated.map(\.id), "reconciliation preserves window UUIDs by AX equality")
+        check(initial.map(\.identity) == repeated.map(\.identity) &&
+              initial.map(\.stateRevision) == repeated.map(\.stateRevision),
+              "unchanged observations preserve both lifecycle and revision")
     }
     controlled.edit { $0.readError = "Controlled timeout" }
+    let unavailableSnapshot = await windowService.windows(for: windowInstance)
+    if case .unavailable = unavailableSnapshot { check(true, "transient AX read has explicit unknown status") }
+    else { check(false, "transient AX read must not be reported as zero windows") }
     let timedOut = await windowService.switchTo(windowInstance)
     check(timedOut.outcome == .activatedOnly && timedOut.message.contains("Controlled timeout"), "transient read failure reports process fallback with its reason")
     controlled.edit { $0.readError = nil }
@@ -203,6 +209,11 @@ if case .windows(let initial) = await windowService.windows(for: windowInstance)
     controlled.edit { $0.values.removeFirst() }
     let vanished = await windowService.select(initial[0])
     check(vanished.outcome == .unavailable && !vanished.activationAccepted, "vanished explicitly selected window never activates an arbitrary app window")
+    controlled.edit { $0.values.insert(AXWindowValue(element: $0.first, title: "Same title", minimized: false, focused: false, canMinimize: true), at: 0) }
+    if case .windows(let recreated) = await windowService.windows(for: windowInstance) {
+        check(recreated[0].identity != initial[0].identity && recreated[0].lifecycle > initial[0].lifecycle,
+              "recreated identical AX window receives a new lifecycle identity")
+    } else { check(false, "recreated window must be observable") }
     controlled.edit { $0.actionError = "Controlled AX action failure" }
     let failed = await windowService.switchTo(windowInstance)
     check(failed.outcome == .activatedOnly && failed.message.contains("Controlled AX action failure"), "AX failures are explanatory process fallbacks rather than success")
@@ -236,6 +247,26 @@ let duplicate = WindowMatcher.match([previewOne, previewOne], to: [graphics[0], 
 check(duplicate[previewOne.id] == .matched(42), "repeated identical AX reference retains a stable match")
 let ambiguous = WindowMatcher.match([previewOne], to: [graphics[0], GraphicalWindow(id: 45, title: "Same", frame: previewOne.frame!)])
 check(ambiguous[previewOne.id] == .ambiguous, "ambiguous graphical candidates never select a thumbnail")
+let identicalAX = WindowReference(id: UUID(), instance: windowInstance, title: "Same", isMinimized: false,
+                                  isFocused: false, canMinimize: true, frame: previewOne.frame)
+let conflict = WindowMatcher.resolve([previewOne, identicalAX], to: [graphics[0]])
+check(conflict[previewOne.id]?.status == .ambiguous &&
+      conflict[identicalAX.id]?.reason == .sharedGraphicsCandidate,
+      "two AX identities cannot claim the same graphics ID")
+let sameFrame = WindowMatcher.resolve([previewOne], to: [graphics[0],
+    GraphicalWindow(id: 45, title: "Same", frame: previewOne.frame!)])
+check(sameFrame[previewOne.id]?.reason == .multipleGraphicsCandidates,
+      "equal title and frame are explicitly ambiguous")
+let resolved = WindowMatcher.resolve([previewOne, previewTwo], to: graphics)
+check(resolved[previewOne.id]?.reason == .uniqueTitleAndGeometry &&
+      resolved[previewOne.id]?.identity == previewOne.identity &&
+      resolved[previewOne.id]?.observedRevision == previewOne.stateRevision,
+      "resolutions retain structured reasons and AX state identity")
+check(WindowMatcher.resolve([previewOne], to: graphics, sourcesAvailable: false)[previewOne.id]?.status == .unavailable,
+      "missing source data differs from a missing graphical candidate")
+let foreign = GraphicalWindow(id: 99, title: "Same", frame: previewOne.frame!, processID: windowInstance.pid + 1)
+check(WindowMatcher.match([previewOne], to: [foreign])[previewOne.id] == .unmatched,
+      "graphical windows from another PID cannot be used")
 check(AccessibilityPermissionStatus(trusted: false).explanation.contains("Process switching"), "permission presentation explains retained process features")
 try await testApplicationCatalog(check)
 try await testCommandLineProcessIcon(check)
