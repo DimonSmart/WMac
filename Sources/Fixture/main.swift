@@ -21,10 +21,13 @@ import Darwin
         } else { exit(74) }
         #endif
         for number in 1...2 {
-            let window = NSWindow(contentRect: NSRect(x: 180 + number * 45, y: 240 + number * 35, width: 420, height: 180),
+            let position = args.contains("--overlap") ? 1 : number
+            let window = NSWindow(contentRect: NSRect(x: 180 + position * 45, y: 240 + position * 35, width: 420, height: 180),
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-            window.title = "WMac Fixture PID \(getpid()) Window \(number)"
-            let label = NSTextField(labelWithString: window.title)
+            let contentTitle = "WMac Fixture PID \(getpid()) Window \(number)"
+            window.title = args.contains("--same-title") ? "WMac Fixture PID \(getpid()) Same Title" : contentTitle
+            // Keep distinct visible contents even when matching evidence is identical.
+            let label = NSTextField(labelWithString: contentTitle)
             label.frame = NSRect(x: 24, y: 70, width: 380, height: 30)
             window.contentView?.addSubview(label)
             window.makeKeyAndOrderFront(nil)
