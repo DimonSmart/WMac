@@ -124,9 +124,9 @@ import AppKit
         guard let selected else { log("Launch an application to select its PID"); return }
         Task { @MainActor in
             switch await accessibility.windows(for: selected.id) {
-            case .unavailable(let message): _ = monitor.activate(selected.id); log(message)
-            case .windows(let windows):
-                log("PID \(selected.id.pid): \(windows.count) standard AX windows")
+            case .unavailable(let message, _): _ = monitor.activate(selected.id); log(message)
+            case .windows(let windows, let diagnostics):
+                log("PID \(selected.id.pid): \(windows.count) confirmed AX windows; enumeration \(diagnostics.status.rawValue) (skipped \(diagnostics.skippedElements))")
                 for window in windows { log(window.title) }
                 let menu = NSMenu()
                 for window in windows {

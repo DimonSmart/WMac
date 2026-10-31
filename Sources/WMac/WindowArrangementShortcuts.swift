@@ -109,10 +109,10 @@ final class WindowArrangementShortcuts {
         guard enabled else { return }
         let windows: [WindowReference]
         switch await accessibility.windows(for: instance) {
-        case .unavailable(let reason):
+        case .unavailable(let reason, _):
             notify?(tr("Window shortcut could not be applied", "Не удалось выполнить сочетание окон"), reason)
             return
-        case .windows(let values): windows = values
+        case .windows(let values, _): windows = values
         }
         guard let window = windows.first(where: { $0.isFocused && !$0.isMinimized }),
               let current = window.frame,

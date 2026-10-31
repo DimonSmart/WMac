@@ -147,6 +147,7 @@ final class ControlledAX: @unchecked Sendable {
     var alive = true
     var activation = true
     var values: [AXWindowValue] = []
+    var reportOverride: AXEnumerationDiagnostics?
     var actions: [WindowAction] = []
     var actionError: String?
     var readError: String?
@@ -161,8 +162,22 @@ final class ControlledAX: @unchecked Sendable {
         boundary.live = { _ in self.lock.withLock { self.alive } }
         boundary.read = { _ in self.lock.withLock {
             self.reads += 1; self.allCallsOffMain = self.allCallsOffMain && !Thread.isMainThread
-            if let error = self.readError { return .failure(AXFailure(message: error)) }
-            return .success(self.values)
+            if let error = self.readError {
+                let report = AXEnumerationDiagnostics(status: .unavailable, listedElements: nil,
+                                                      inspectedElements: 0, confirmedElements: 0, skippedElements: 0,
+                                                      issues: [], failureReason: error,
+                                                      failedAttribute: "kAXWindowsAttribute", axError: nil)
+                return .failure(AXFailure(message: error, diagnostics: report))
+            }
+            let status: AXEnumerationStatus = self.values.isEmpty ? .empty : .complete
+            let diagnostics = self.reportOverride ?? AXEnumerationDiagnostics(status: status,
+                                                                               listedElements: self.values.count,
+                                                                               inspectedElements: self.values.count,
+                                                                               confirmedElements: self.values.count,
+                                                                               skippedElements: 0, issues: [],
+                                                                               failureReason: nil, failedAttribute: nil,
+                                                                               axError: nil)
+            return .success(AXWindowRead(windows: self.values, diagnostics: diagnostics))
         } }
         boundary.perform = { _, element, action in self.lock.withLock {
             self.allCallsOffMain = self.allCallsOffMain && !Thread.isMainThread
@@ -181,15 +196,61 @@ final class ControlledAX: @unchecked Sendable {
     }
 }
 let controlled = ControlledAX()
+let confirmedUnknownSubrole = AXWindowElementFacts(index: 3, element: controlled.first,
+                                                  role: kAXWindowRole as String, roleError: 0,
+                                                  subrole: nil, subroleError: -25212,
+                                                  title: "Folder", titleError: 0, minimized: false, minimizedError: 0,
+                                                  frame: CGRect(x: 20, y: 30, width: 640, height: 480),
+                                                  positionError: 0, sizeError: 0, canMinimize: true, canMinimizeError: 0)
+switch AccessibilityBoundary.classify(confirmedUnknownSubrole, focused: false) {
+case .included(let window, let issue):
+    check(window.role == (kAXWindowRole as String) && window.subrole == nil &&
+          issue?.included == true && issue?.failures.contains(where: { $0.attribute == "kAXSubroleAttribute" && $0.code == -25212 }) == true,
+          "subrole -25212 is recoverable only when independent public window attributes confirm it")
+case .excluded:
+    check(false, "publicly confirmed AX window can survive a local subrole failure")
+}
+let unconfirmedUnknownSubrole = AXWindowElementFacts(index: 4, element: controlled.second,
+                                                     role: kAXWindowRole as String, roleError: 0,
+                                                     subrole: nil, subroleError: -25212,
+                                                     title: nil, titleError: -25212, minimized: false, minimizedError: 0,
+                                                     frame: nil, positionError: -25212, sizeError: -25212,
+                                                     canMinimize: false, canMinimizeError: 0)
+if case .excluded(let issue) = AccessibilityBoundary.classify(unconfirmedUnknownSubrole, focused: false) {
+    check(!issue.included && issue.reason == "windowSubroleUnavailableWithoutConfirmation",
+          "AX subrole failure without independent public signs is excluded")
+} else { check(false, "unconfirmed AX element is never promoted to a manageable window") }
+let unsupportedSubrole = AXWindowElementFacts(index: 5, element: controlled.second,
+                                              role: kAXWindowRole as String, roleError: 0,
+                                              subrole: "AXPopover", subroleError: 0,
+                                              title: "Popover", titleError: 0, minimized: false, minimizedError: 0,
+                                              frame: CGRect(x: 0, y: 0, width: 100, height: 80),
+                                              positionError: 0, sizeError: 0, canMinimize: true, canMinimizeError: 0)
+if case .excluded(let issue) = AccessibilityBoundary.classify(unsupportedSubrole, focused: false) {
+    check(issue.reason == "unsupportedSubrole" && issue.affectsCompleteness,
+          "an unsupported subrole on an AXWindow stays out and withholds thumbnail confirmation")
+} else { check(false, "unsupported AX subrole is not manageable") }
+let finderNonWindow = AXWindowElementFacts(index: 6, element: controlled.second,
+                                          role: "AXScrollArea", roleError: 0,
+                                          subrole: nil, subroleError: -25212,
+                                          title: nil, titleError: -25212, minimized: false, minimizedError: 0,
+                                          frame: CGRect(x: 0, y: 0, width: 1200, height: 800),
+                                          positionError: 0, sizeError: 0, canMinimize: false, canMinimizeError: 0)
+if case .excluded(let issue) = AccessibilityBoundary.classify(finderNonWindow, focused: false) {
+    check(issue.reason == "unsupportedRole" && !issue.affectsCompleteness &&
+          issue.failures.contains(where: { $0.attribute == "kAXSubroleAttribute" && $0.code == -25212 }),
+          "a readable non-window role with transient subrole failure is excluded without discarding confirmed windows")
+} else { check(false, "AXScrollArea is never promoted to a manageable window") }
 controlled.edit { value in
     value.values = [AXWindowValue(element: value.first, title: "Same title", minimized: false, focused: false, canMinimize: true),
                     AXWindowValue(element: value.second, title: "Same title", minimized: false, focused: true, canMinimize: true)]
 }
 let windowService = AccessibilityService(boundary: controlled.boundary())
 let windowInstance = fixture(900001, 1).id
-if case .windows(let initial) = await windowService.windows(for: windowInstance) {
+if case .windows(let initial, let initialDiagnostics) = await windowService.windows(for: windowInstance) {
     check(initial.count == 2 && initial[0].id != initial[1].id, "equal titles retain distinct actual AX identities")
-    if case .windows(let repeated) = await windowService.windows(for: windowInstance) {
+    check(initialDiagnostics.status == .complete, "successful non-empty AX snapshot is reported complete")
+    if case .windows(let repeated, _) = await windowService.windows(for: windowInstance) {
         check(initial.map(\.id) == repeated.map(\.id), "reconciliation preserves window UUIDs by AX equality")
         check(initial.map(\.identity) == repeated.map(\.identity) &&
               initial.map(\.stateRevision) == repeated.map(\.stateRevision),
@@ -205,7 +266,7 @@ if case .windows(let initial) = await windowService.windows(for: windowInstance)
     check(timedOut.outcome == .activatedOnly && timedOut.message.contains("Controlled timeout"), "transient read failure reports process fallback with its reason")
     check(eventCounter.value == 1, "transient AX unavailability emits one change event, not an empty window list")
     controlled.edit { $0.readError = nil }
-    if case .windows(let recovered) = await windowService.windows(for: windowInstance) {
+    if case .windows(let recovered, _) = await windowService.windows(for: windowInstance) {
         check(recovered.map(\.id) == initial.map(\.id), "transient unreadability does not fabricate closure or change known AX identities")
         check(eventCounter.value == 2, "AX recovery notifies subscribers without changing semantic window IDs")
     } else { check(false, "controlled timeout recovery") }
@@ -220,7 +281,7 @@ if case .windows(let initial) = await windowService.windows(for: windowInstance)
     let vanished = await windowService.select(initial[0])
     check(vanished.outcome == .unavailable && !vanished.activationAccepted, "vanished explicitly selected window never activates an arbitrary app window")
     controlled.edit { $0.values.insert(AXWindowValue(element: $0.first, title: "Same title", minimized: false, focused: false, canMinimize: true), at: 0) }
-    if case .windows(let recreated) = await windowService.windows(for: windowInstance) {
+    if case .windows(let recreated, _) = await windowService.windows(for: windowInstance) {
         check(recreated[0].identity != initial[0].identity && recreated[0].lifecycle > initial[0].lifecycle,
               "recreated identical AX window receives a new lifecycle identity")
     } else { check(false, "recreated window must be observable") }
@@ -235,10 +296,48 @@ if case .windows(let initial) = await windowService.windows(for: windowInstance)
     let noAccess = await windowService.switchTo(windowInstance)
     check(noAccess.outcome == .activatedOnly && noAccess.activationAccepted && controlled.lock.withLock { controlled.reads == beforeReads }, "controlled unavailable permission skips AX and retains process activation")
     controlled.edit { $0.allowed = true }
-    if case .windows(let afterPermissionReturn) = await windowService.windows(for: windowInstance) {
+    var afterPermissionIdentity: WindowIdentity?
+    if case .windows(let afterPermissionReturn, _) = await windowService.windows(for: windowInstance) {
+        afterPermissionIdentity = afterPermissionReturn.first?.identity
         check(afterPermissionReturn.first?.identity == initial[1].identity,
               "temporary Accessibility permission loss preserves the known semantic window")
     } else { check(false, "Accessibility permission recovery must resume enumeration") }
+
+    let partialIssue = AXElementDiagnostic(index: 0, included: false, affectsCompleteness: true,
+                                           reason: "windowSubroleUnavailableWithoutConfirmation",
+                                           role: kAXWindowRole as String, subrole: nil, titleReadable: false,
+                                           minimized: nil, positionReadable: false, sizeReadable: false,
+                                           canMinimize: nil,
+                                           failures: [AXAttributeFailure(attribute: "kAXSubroleAttribute", code: -25212)])
+    let partialReport = AXEnumerationDiagnostics(status: .partial, listedElements: 2, inspectedElements: 2,
+                                                 confirmedElements: 1, skippedElements: 1, issues: [partialIssue],
+                                                 failureReason: nil, failedAttribute: nil, axError: nil)
+    controlled.edit {
+        $0.values = [AXWindowValue(element: $0.second, title: "Renamed", minimized: false,
+                                    focused: true, canMinimize: false)]
+        $0.reportOverride = partialReport
+    }
+    if case .windows(let partial, let diagnostics) = await windowService.windows(for: windowInstance) {
+        check(partial.count == 1 && partial[0].identity == afterPermissionIdentity &&
+              diagnostics.status == .partial && diagnostics.confirmedElements == 1 && diagnostics.skippedElements == 1,
+              "partial AX failure preserves only freshly confirmed windows and reports skipped element")
+    } else { check(false, "partial AX snapshot remains available") }
+    let activationsBeforeSkippedSelection = controlled.lock.withLock { controlled.activationRequests }
+    let skippedSelection = await windowService.select(initial[0])
+    check(skippedSelection.outcome == .unavailable && !skippedSelection.activationAccepted &&
+          controlled.lock.withLock { controlled.activationRequests == activationsBeforeSkippedSelection },
+          "a skipped AX element cannot be selected or fall back to process activation")
+    controlled.edit { $0.reportOverride = nil; $0.readError = "Controlled root enumeration failure" }
+    if case .unavailable(let message, let diagnostics) = await windowService.windows(for: windowInstance) {
+        check(message.contains("Controlled root enumeration failure") && diagnostics?.status == .unavailable,
+              "root AX enumeration failure remains unavailable rather than an empty window list")
+    } else { check(false, "root enumeration failure is not reported as a window list") }
+    controlled.edit { $0.readError = nil }
+    if case .windows(let recovered, let diagnostics) = await windowService.windows(for: windowInstance) {
+        check(diagnostics.status == .complete && recovered.count == 1 && recovered[0].identity == afterPermissionIdentity,
+              "a complete AX read recovers the retained confirmed window identity")
+    } else { check(false, "complete enumeration recovers after total failure") }
+
     controlled.edit { $0.alive = false }
     let terminated = await windowService.select(initial[1])
     check(terminated.outcome == .unavailable && !terminated.activationAccepted, "terminated lifetime rejects both AX and process actions")
@@ -248,6 +347,12 @@ if case .windows(let initial) = await windowService.windows(for: windowInstance)
     await windowService.stopListening(windowInstance, token: listener)
     check(controlled.lock.withLock { controlled.allCallsOffMain }, "all controlled enumeration/action calls execute off the main thread")
 } else { check(false, "controlled window snapshot must be available") }
+
+let emptyAX = ControlledAX()
+let emptyInstance = fixture(900099, 1).id
+if case .windows(let empty, let diagnostics) = await AccessibilityService(boundary: emptyAX.boundary()).windows(for: emptyInstance) {
+    check(empty.isEmpty && diagnostics.status == .empty, "zero AX elements are distinguished from partial and unavailable enumeration")
+} else { check(false, "empty AX snapshot remains an available result") }
 let previewOne = WindowReference(id: UUID(), instance: windowInstance, title: "Same", isMinimized: false, isFocused: true, canMinimize: true,
                                  frame: CGRect(x: -1100, y: 50, width: 700, height: 420))
 let previewTwo = WindowReference(id: UUID(), instance: windowInstance, title: "Same", isMinimized: false, isFocused: false, canMinimize: true,

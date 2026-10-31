@@ -35,8 +35,8 @@ struct WindowReference: Identifiable, Equatable, Sendable {
     }
 }
 enum WindowResult: Sendable {
-    case windows([WindowReference])
-    case unavailable(String)
+    case windows([WindowReference], AXEnumerationDiagnostics)
+    case unavailable(String, AXEnumerationDiagnostics?)
 }
 enum WindowAction: Sendable { case restore, minimize }
 struct WindowActionResult: Sendable {
@@ -78,6 +78,63 @@ struct AXWindowValue: @unchecked Sendable {
     var role: String? = nil
     var subrole: String? = nil
 }
+struct AXAttributeFailure: Equatable, Sendable {
+    let attribute: String
+    let code: Int32
+}
+struct AXElementDiagnostic: Equatable, Sendable {
+    let index: Int
+    let included: Bool
+    let affectsCompleteness: Bool
+    let reason: String
+    let role: String?
+    let subrole: String?
+    let titleReadable: Bool
+    let minimized: Bool?
+    let positionReadable: Bool
+    let sizeReadable: Bool
+    let canMinimize: Bool?
+    let failures: [AXAttributeFailure]
+}
+enum AXEnumerationStatus: String, Equatable, Sendable {
+    case complete, empty, partial, unavailable
+}
+struct AXEnumerationDiagnostics: Equatable, Sendable {
+    let status: AXEnumerationStatus
+    let listedElements: Int?
+    let inspectedElements: Int
+    let confirmedElements: Int
+    let skippedElements: Int
+    let issues: [AXElementDiagnostic]
+    let failureReason: String?
+    let failedAttribute: String?
+    let axError: Int32?
+}
+struct AXWindowRead: Sendable {
+    let windows: [AXWindowValue]
+    let diagnostics: AXEnumerationDiagnostics
+}
+struct AXWindowElementFacts: @unchecked Sendable {
+    let index: Int
+    let element: AXUIElement
+    let role: String?
+    let roleError: Int32
+    let subrole: String?
+    let subroleError: Int32
+    let title: String?
+    let titleError: Int32
+    let minimized: Bool?
+    let minimizedError: Int32
+    let frame: CGRect?
+    let positionError: Int32
+    let sizeError: Int32
+    let canMinimize: Bool?
+    let canMinimizeError: Int32
+}
+enum AXElementClassification {
+    case included(AXWindowValue, AXElementDiagnostic?)
+    case excluded(AXElementDiagnostic)
+}
 struct AccessibilityBoundary: Sendable {
     var observesWindows = true
     var trusted: @Sendable () -> Bool = { AXIsProcessTrusted() }
@@ -85,46 +142,58 @@ struct AccessibilityBoundary: Sendable {
         guard let app = NSRunningApplication(processIdentifier: id.pid) else { return false }
         return !app.isTerminated && ProcessLifetime.startDate(for: app) == id.startDate
     }
-    var read: @Sendable (InstanceID) -> Result<[AXWindowValue], AXFailure> = { id in
+    var read: @Sendable (InstanceID) -> Result<AXWindowRead, AXFailure> = { id in
         let app = AXUIElementCreateApplication(id.pid)
         AXUIElementSetMessagingTimeout(app, 0.5)
         var value: CFTypeRef?
         let error = AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value)
         guard error == .success, let elements = value as? [AXUIElement] else {
-            return .failure(AXFailure(message: "Window enumeration unavailable (AX \(error.rawValue))."))
+            let report = AXEnumerationDiagnostics(status: .unavailable, listedElements: nil,
+                                                  inspectedElements: 0, confirmedElements: 0, skippedElements: 0,
+                                                  issues: [], failureReason: "Window list attribute is unavailable or has an invalid value.",
+                                                  failedAttribute: "kAXWindowsAttribute", axError: error.rawValue)
+            return .failure(AXFailure(message: "Window enumeration unavailable (AX \(error.rawValue)).", diagnostics: report))
         }
-        guard elements.count <= 64 else { return .failure(AXFailure(message: "Window enumeration exceeds the 64-window safety budget; process switching remains available.")) }
+        guard elements.count <= 64 else {
+            let report = AXEnumerationDiagnostics(status: .unavailable, listedElements: elements.count,
+                                                  inspectedElements: 0, confirmedElements: 0, skippedElements: 0,
+                                                  issues: [], failureReason: "Window enumeration exceeds the 64-window safety budget.",
+                                                  failedAttribute: "kAXWindowsAttribute", axError: nil)
+            return .failure(AXFailure(message: "Window enumeration exceeds the 64-window safety budget; process switching remains available.", diagnostics: report))
+        }
         var focused: CFTypeRef?
         _ = AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &focused)
         let deadline = Date().addingTimeInterval(3)
         var windows: [AXWindowValue] = []
-        for element in elements.prefix(64) {
-            guard Date() < deadline else { return .failure(AXFailure(message: "Window enumeration exceeded its time budget.")) }
+        var issues: [AXElementDiagnostic] = []
+        var inspected = 0
+        var skipped = 0
+        func timedOut() -> AXFailure {
+            let report = AXEnumerationDiagnostics(status: .unavailable, listedElements: elements.count,
+                                                  inspectedElements: inspected, confirmedElements: windows.count,
+                                                  skippedElements: skipped, issues: issues,
+                                                  failureReason: "Window enumeration exceeded its time budget.",
+                                                  failedAttribute: "deadline", axError: nil)
+            return AXFailure(message: "Window enumeration exceeded its time budget.", diagnostics: report)
+        }
+        for (index, element) in elements.enumerated() {
+            guard Date() < deadline else { return .failure(timedOut()) }
             AXUIElementSetMessagingTimeout(element, 0.5)
-            var subrole: CFTypeRef?
-            let subroleError = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
-            guard subroleError == .success else { return .failure(AXFailure(message: "Window subrole temporarily unavailable (AX \(subroleError.rawValue)).")) }
-            guard subrole as? String == kAXStandardWindowSubrole || subrole as? String == kAXDialogSubrole else { continue }
-            var title: CFTypeRef?, minimized: CFTypeRef?
-            _ = AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &title)
-            // An unreadable minimized attribute is not a reliable actionable window.
-            let minimizedError = AXUIElementCopyAttributeValue(element, kAXMinimizedAttribute as CFString, &minimized)
-            guard minimizedError == .success else { return .failure(AXFailure(message: "Window minimized state temporarily unavailable (AX \(minimizedError.rawValue)).")) }
-            var settable: DarwinBoolean = false
-            _ = AXUIElementIsAttributeSettable(element, kAXMinimizedAttribute as CFString, &settable)
-            // AppKit can expose minimized/restoring standard windows as
-            // AXDialog. Require public window role and minimization support;
-            // utility/popover and non-minimizable dialog subroles stay out.
-            if subrole as? String != kAXStandardWindowSubrole {
-                var role: CFTypeRef?
-                guard subrole as? String == kAXDialogSubrole, settable.boolValue,
-                      AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role) == .success,
-                      role as? String == kAXWindowRole else { continue }
+            func read(_ attribute: String) -> (CFTypeRef?, AXError) {
+                var result: CFTypeRef?
+                let resultError = AXUIElementCopyAttributeValue(element, attribute as CFString, &result)
+                return (result, resultError)
             }
-            var positionValue: CFTypeRef?, sizeValue: CFTypeRef?
+            let (roleValue, roleError) = read(kAXRoleAttribute)
+            let (subroleValue, subroleError) = read(kAXSubroleAttribute)
+            let (titleValue, titleError) = read(kAXTitleAttribute)
+            let (minimizedValue, minimizedError) = read(kAXMinimizedAttribute)
+            let (positionValue, positionError) = read(kAXPositionAttribute)
+            let (sizeValue, sizeError) = read(kAXSizeAttribute)
+            var settable: DarwinBoolean = false
+            let settableError = AXUIElementIsAttributeSettable(element, kAXMinimizedAttribute as CFString, &settable)
             var frame: CGRect?
-            if AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue) == .success,
-               AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
+            if positionError == .success, sizeError == .success,
                let originRaw = positionValue, let sizeRaw = sizeValue,
                CFGetTypeID(originRaw) == AXValueGetTypeID(), CFGetTypeID(sizeRaw) == AXValueGetTypeID() {
                 let originAX = originRaw as! AXValue
@@ -137,11 +206,32 @@ struct AccessibilityBoundary: Sendable {
                     frame = CGRect(origin: origin, size: size)
                 }
             }
-            windows.append(AXWindowValue(element: element, title: title as? String ?? "Window", minimized: minimized as? Bool ?? false,
-                                         focused: focused.map { CFEqual($0, element) } ?? false, canMinimize: settable.boolValue, frame: frame,
-                                         role: kAXWindowRole as String, subrole: subrole as? String))
+            let facts = AXWindowElementFacts(index: index, element: element,
+                                             role: roleValue as? String, roleError: roleError.rawValue,
+                                             subrole: subroleValue as? String, subroleError: subroleError.rawValue,
+                                             title: titleValue as? String, titleError: titleError.rawValue,
+                                             minimized: minimizedValue as? Bool, minimizedError: minimizedError.rawValue,
+                                             frame: frame, positionError: positionError.rawValue, sizeError: sizeError.rawValue,
+                                             canMinimize: settableError == .success ? settable.boolValue : nil,
+                                             canMinimizeError: settableError.rawValue)
+            switch Self.classify(facts, focused: focused.map { CFEqual($0, element) } ?? false) {
+            case .included(let window, let issue):
+                windows.append(window)
+                if let issue { issues.append(issue) }
+            case .excluded(let issue):
+                skipped += 1
+                issues.append(issue)
+            }
+            inspected += 1
+            if Date() >= deadline { return .failure(timedOut()) }
         }
-        return .success(windows)
+        let status: AXEnumerationStatus = issues.contains(where: \.affectsCompleteness)
+            ? .partial : (windows.isEmpty ? .empty : .complete)
+        let report = AXEnumerationDiagnostics(status: status, listedElements: elements.count,
+                                              inspectedElements: inspected, confirmedElements: windows.count,
+                                              skippedElements: skipped, issues: issues, failureReason: nil,
+                                              failedAttribute: nil, axError: nil)
+        return .success(AXWindowRead(windows: windows, diagnostics: report))
     }
     var perform: @Sendable (InstanceID, AXUIElement, WindowAction) -> String? = { id, element, action in
         func valid() -> Bool {
@@ -181,7 +271,80 @@ struct AccessibilityBoundary: Sendable {
         return app.activate(options: [])
     }
 }
-struct AXFailure: Error, Sendable { let message: String }
+extension AccessibilityBoundary {
+    static func classify(_ facts: AXWindowElementFacts, focused: Bool) -> AXElementClassification {
+        var failures: [AXAttributeFailure] = []
+        for (attribute, code) in [("kAXRoleAttribute", facts.roleError), ("kAXSubroleAttribute", facts.subroleError),
+                                  ("kAXTitleAttribute", facts.titleError), ("kAXMinimizedAttribute", facts.minimizedError),
+                                  ("kAXPositionAttribute", facts.positionError), ("kAXSizeAttribute", facts.sizeError),
+                                  ("kAXMinimizedAttributeSettable", facts.canMinimizeError)] where code != AXError.success.rawValue {
+            failures.append(AXAttributeFailure(attribute: attribute, code: code))
+        }
+        func diagnostic(included: Bool, reason: String, affectsCompleteness: Bool = true) -> AXElementDiagnostic {
+            AXElementDiagnostic(index: facts.index, included: included, affectsCompleteness: affectsCompleteness, reason: reason,
+                                role: facts.role, subrole: facts.subrole,
+                                titleReadable: facts.titleError == AXError.success.rawValue && facts.title != nil,
+                                minimized: facts.minimized, positionReadable: facts.positionError == AXError.success.rawValue,
+                                sizeReadable: facts.sizeError == AXError.success.rawValue,
+                                canMinimize: facts.canMinimize, failures: failures)
+        }
+        func exclude(_ reason: String, affectsCompleteness: Bool = true) -> AXElementClassification {
+            .excluded(diagnostic(included: false, reason: reason, affectsCompleteness: affectsCompleteness))
+        }
+
+        guard facts.roleError == AXError.success.rawValue else { return exclude("roleUnavailable") }
+        guard facts.role == (kAXWindowRole as String) else {
+            // A readable non-window role, such as AXScrollArea in Finder's
+            // window array, is conclusively excluded without making the
+            // confirmed window inventory incomplete. Its failed attributes
+            // remain visible in opt-in diagnostics.
+            return exclude("unsupportedRole", affectsCompleteness: false)
+        }
+        guard facts.minimizedError == AXError.success.rawValue, let minimized = facts.minimized else {
+            return exclude("minimizedStateUnavailable")
+        }
+
+        let subrole: String?
+        let classificationReason: String?
+        if facts.subroleError == AXError.success.rawValue {
+            guard let knownSubrole = facts.subrole,
+                  knownSubrole == (kAXStandardWindowSubrole as String) || knownSubrole == (kAXDialogSubrole as String) else {
+                return exclude("unsupportedSubrole")
+            }
+            if knownSubrole == (kAXDialogSubrole as String), facts.canMinimize != true {
+                return exclude("dialogNotMinimizable")
+            }
+            subrole = knownSubrole
+            classificationReason = nil
+        } else {
+            // If subrole alone is unreadable, require independent public signs
+            // of an actionable window. Unknown or stale AX elements fail closed.
+            guard facts.titleError == AXError.success.rawValue, facts.title != nil,
+                  facts.positionError == AXError.success.rawValue, facts.sizeError == AXError.success.rawValue,
+                  facts.frame != nil, facts.canMinimizeError == AXError.success.rawValue,
+                  facts.canMinimize == true else { return exclude("windowSubroleUnavailableWithoutConfirmation") }
+            subrole = nil
+            classificationReason = "subroleUnavailableWindowConfirmedByPublicAttributes"
+        }
+
+        var issue: AXElementDiagnostic?
+        if !failures.isEmpty {
+            issue = diagnostic(included: true, reason: classificationReason ?? "optionalWindowAttributeUnavailable")
+        }
+        let value = AXWindowValue(element: facts.element, title: facts.title ?? "Window", minimized: minimized,
+                                  focused: focused, canMinimize: facts.canMinimize ?? false, frame: facts.frame,
+                                  role: facts.role, subrole: subrole)
+        return .included(value, issue)
+    }
+}
+struct AXFailure: Error, Sendable {
+    let message: String
+    let diagnostics: AXEnumerationDiagnostics?
+    init(message: String, diagnostics: AXEnumerationDiagnostics? = nil) {
+        self.message = message
+        self.diagnostics = diagnostics
+    }
+}
 
 final class AccessibilityService: @unchecked Sendable {
     private let queue = DispatchQueue(label: "app.wmac.accessibility")
@@ -264,25 +427,35 @@ final class AccessibilityService: @unchecked Sendable {
         if existed { publishChange(id) }
     }
     private func refresh(_ id: InstanceID) -> WindowResult {
-        guard boundary.live(id) else { invalidate(id); return .unavailable("Process lifetime no longer matches.") }
+        guard boundary.live(id) else { invalidate(id); return .unavailable("Process lifetime no longer matches.", nil) }
         guard boundary.trusted() else {
             // Missing permission is unknown state, not evidence that the AX windows closed.
             if unavailableInstances.insert(id).inserted { publishChange(id) }
-            return .unavailable("Accessibility unavailable. Process activation remains available.")
+            return .unavailable("Accessibility unavailable. Process activation remains available.", nil)
         }
         switch boundary.read(id) {
         case .failure(let error):
             // A transient timeout is unknown state; retain semantic identity but
             // make listeners discard images until a successful fresh read.
             if unavailableInstances.insert(id).inserted { publishChange(id) }
-            return .unavailable(error.message)
-        case .success(let values):
-            guard boundary.live(id) else { invalidate(id); return .unavailable("Process exited during enumeration.") }
+            return .unavailable(error.message, error.diagnostics)
+        case .success(let read):
+            guard boundary.live(id) else {
+                invalidate(id)
+                let report = AXEnumerationDiagnostics(status: .unavailable, listedElements: read.diagnostics.listedElements,
+                                                      inspectedElements: read.diagnostics.inspectedElements,
+                                                      confirmedElements: read.diagnostics.confirmedElements,
+                                                      skippedElements: read.diagnostics.skippedElements,
+                                                      issues: read.diagnostics.issues,
+                                                      failureReason: "Process exited during enumeration.",
+                                                      failedAttribute: nil, axError: nil)
+                return .unavailable("Process exited during enumeration.", report)
+            }
             var state = states[id] ?? State()
             let previous = state.records
             let wasUnavailable = unavailableInstances.remove(id) != nil
             var refreshed: [Record] = []
-            for value in values {
+            for value in read.windows {
                 // Duplicate AX handles are one semantic window, never two competing cards.
                 guard !refreshed.contains(where: { CFEqual($0.element, value.element) }) else { continue }
                 let old = previous.first { CFEqual($0.element, value.element) }?.snapshot
@@ -309,13 +482,13 @@ final class AccessibilityService: @unchecked Sendable {
             if wasUnavailable || previous.map(\.snapshot) != state.records.map(\.snapshot) { publishChange(id) }
             // Observer callbacks reconcile closure/focus/title/minimize changes. A fresh
             // read before every action also covers apps with incomplete notifications.
-            if !boundary.observesWindows { return .windows(state.records.map(\.snapshot)) }
+            if !boundary.observesWindows { return .windows(state.records.map(\.snapshot), read.diagnostics) }
             if observations[id] == nil {
-                observations[id] = WindowObservation.create(pid: id.pid, windows: values.map(\.element)) { [weak self] in
+                observations[id] = WindowObservation.create(pid: id.pid, windows: read.windows.map(\.element)) { [weak self] in
                     self?.queue.async { [weak self] in self?.scheduleObserverRefresh(id) }
                 }
-            } else { observations[id]?.update(windows: values.map(\.element)) }
-            return .windows(state.records.map(\.snapshot))
+            } else { observations[id]?.update(windows: read.windows.map(\.element)) }
+            return .windows(state.records.map(\.snapshot), read.diagnostics)
         }
     }
     func windows(for instance: InstanceID) async -> WindowResult {
@@ -400,7 +573,7 @@ final class AccessibilityService: @unchecked Sendable {
         let prepared: Prepared = await withCheckedContinuation { continuation in
             queue.async {
                 let refreshed = self.refresh(id)
-                if case .unavailable(let message) = refreshed {
+                if case .unavailable(let message, _) = refreshed {
                     continuation.resume(returning: Prepared(outcome: .activatedOnly, message: message + " Attempted process activation.")); return
                 }
                 guard var state = self.states[id] else {

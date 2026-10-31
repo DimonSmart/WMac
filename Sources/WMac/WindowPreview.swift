@@ -24,6 +24,8 @@ final class WindowPreviewController {
     private var pointerOnPanel = false
     private var explicitOpen = false
     private var axTemporarilyUnavailable = false
+    private var axEnumerationIncomplete = false
+    private var lastEnumerationDiagnostics: AXEnumerationDiagnostics?
 
     init(runtime: TaskbarDelegate) { self.runtime = runtime }
 
@@ -97,6 +99,8 @@ final class WindowPreviewController {
         panel = nil; content = nil; current = nil; source = nil
         explicitOpen = false
         axTemporarilyUnavailable = false
+        axEnumerationIncomplete = false
+        lastEnumerationDiagnostics = nil
         pointerOnPanel = false; pointerOnButton = false
     }
 
@@ -119,13 +123,25 @@ final class WindowPreviewController {
               (explicit || (pointerOnButton && self.source === button)) else { return }
         let windows: [WindowReference]
         let information: String?
+        let enumerationComplete: Bool
+        let dataAvailable: Bool
         switch result {
-        case .windows(let values):
+        case .windows(let values, let diagnostics):
             windows = values
-            information = values.isEmpty ? tr("No manageable windows", "Нет управляемых окон") : nil
+            recordEnumeration(diagnostics, instance: id)
+            enumerationComplete = diagnostics.status != .partial
+            dataAvailable = true
+            information = diagnostics.status == .partial
+                ? (values.isEmpty
+                   ? tr("No confirmed windows; the window list is incomplete.", "Нет подтверждённых окон; список неполный.")
+                   : tr("Some windows are unavailable; thumbnails are withheld.", "Часть окон недоступна; миниатюры временно скрыты."))
+                : (values.isEmpty ? tr("No manageable windows", "Нет управляемых окон") : nil)
             if !explicit && !runtime.settings.value.shouldPreview(values.count, app: capture.application) { return }
-        case .unavailable(let reason):
-            thumbnails.axUnavailable(instance: id, reason: reason)
+        case .unavailable(let reason, let diagnostics):
+            thumbnails.axUnavailable(instance: id, reason: reason, diagnostics: diagnostics)
+            lastEnumerationDiagnostics = diagnostics
+            enumerationComplete = false
+            dataAvailable = false
             guard explicit else { return }
             windows = []
             information = runtime.permissions.trusted
@@ -150,6 +166,7 @@ final class WindowPreviewController {
         if information != nil || !runtime.settings.value.showWindowThumbnails || !CGPreflightScreenCaptureAccess() {
             view.setPermissionHint(allowImages: runtime.settings.value.showWindowThumbnails, axTrusted: runtime.permissions.trusted)
         }
+        view.setEnumerationIncomplete(!enumerationComplete)
 
         let destination = place(size: view.frame.size, near: button)
         let popup = WindowPreviewPanel(contentRect: destination)
@@ -163,7 +180,8 @@ final class WindowPreviewController {
             button.toolTip = nil
         }
         current = capture
-        axTemporarilyUnavailable = information != nil
+        axTemporarilyUnavailable = !dataAvailable
+        axEnumerationIncomplete = dataAvailable && !enumerationComplete
         explicitOpen = explicit
         panel = popup; content = view
         popup.orderFront(nil)
@@ -173,7 +191,7 @@ final class WindowPreviewController {
             if let first = view.cards.first { popup.makeFirstResponder(first) }
         }
 
-        startImages(windows, instance: id, capture: capture, token: token)
+        if enumerationComplete { startImages(windows, instance: id, capture: capture, token: token) }
         if panel != nil {
             listenerTask = Task { [weak self] in
                 guard let self else { return }
@@ -215,36 +233,49 @@ final class WindowPreviewController {
                                                 axTrusted: self.runtime.permissions.trusted)
             }
             switch latest {
-            case .unavailable(let reason):
+            case .unavailable(let reason, let diagnostics):
                 if !self.axTemporarilyUnavailable {
-                    self.thumbnails.axUnavailable(instance: id, reason: reason)
+                    self.thumbnails.axUnavailable(instance: id, reason: reason, diagnostics: diagnostics)
+                    self.lastEnumerationDiagnostics = diagnostics
                     self.axTemporarilyUnavailable = true
+                    self.axEnumerationIncomplete = false
                     self.generation = UUID()
                     self.imageTask?.cancel()
                     self.thumbnails.clear()
                     self.content?.clearImages()
                     self.content?.setDataUnavailable(true)
                 }
-            case .windows(let updated):
-                let recovered = self.axTemporarilyUnavailable
+            case .windows(let updated, let diagnostics):
+                self.recordEnumeration(diagnostics, instance: id)
+                let incomplete = diagnostics.status == .partial
+                let recovered = self.axTemporarilyUnavailable || self.axEnumerationIncomplete
+                let wasIncomplete = self.axEnumerationIncomplete
                 self.axTemporarilyUnavailable = false
+                self.axEnumerationIncomplete = incomplete
                 if let view = self.content {
                     let changed = view.reconcile(updated)
                     view.setDataUnavailable(false)
+                    view.setEnumerationIncomplete(incomplete)
                     view.setPermissionHint(allowImages: self.runtime.settings.value.showWindowThumbnails,
                                            axTrusted: self.runtime.permissions.trusted)
-                    if changed || recovered {
+                    if incomplete && (!wasIncomplete || changed) || !incomplete && (changed || recovered) {
                         self.generation = UUID()
                         self.imageTask?.cancel()
                         // Other AX windows can make an unchanged card's former
                         // graphical match ambiguous. Clear every previous image.
                         view.clearImages()
                         self.thumbnails.clear()
-                        self.startImages(updated, instance: id, capture: capture, token: self.generation)
+                        if !incomplete { self.startImages(updated, instance: id, capture: capture, token: self.generation) }
                     }
                 }
             }
         }
+    }
+
+    private func recordEnumeration(_ diagnostics: AXEnumerationDiagnostics, instance: InstanceID) {
+        guard diagnostics != lastEnumerationDiagnostics else { return }
+        lastEnumerationDiagnostics = diagnostics
+        thumbnails.axEnumeration(instance: instance, diagnostics: diagnostics)
     }
 
     private func startImages(_ windows: [WindowReference], instance: InstanceID, capture: ButtonCapture, token: UUID) {
@@ -507,6 +538,11 @@ private final class WindowPreviewView: NSView {
         info.stringValue = unavailable ? tr("Window data temporarily unavailable; retrying…", "Данные окон временно недоступны; повторяем…") :
             (cards.isEmpty ? tr("No manageable windows", "Нет управляемых окон") : "")
     }
+    func setEnumerationIncomplete(_ incomplete: Bool) {
+        info.stringValue = incomplete
+            ? tr("Some windows are unavailable; thumbnails are withheld.", "Часть окон недоступна; миниатюры временно скрыты.")
+            : (cards.isEmpty ? tr("No manageable windows", "Нет управляемых окон") : "")
+    }
     func update(window reference: WindowReference, image: NSImage, cached: Bool) {
         guard let card = cards.first(where: { $0.windowReference.identity == reference.identity }),
               card.windowReference.captureState == reference.captureState else { return }
@@ -552,8 +588,29 @@ private final class WindowThumbnailService {
         logger.info("windowIdentity code=\(code, privacy: .public) \(identity, privacy: .public) candidates=\(String(describing: candidates), privacy: .public) \(detail, privacy: .public)")
     }
 
-    func axUnavailable(instance: InstanceID, reason: String) {
-        diagnose("axEnumerationUnavailable", detail: "pid=\(instance.pid) start=\(instance.startDate.timeIntervalSince1970) reason=\(reason)")
+    func axEnumeration(instance: InstanceID, diagnostics: AXEnumerationDiagnostics) {
+        let listed = diagnostics.listedElements.map { String($0) } ?? "unknown"
+        let failedAttribute = diagnostics.failedAttribute ?? "none"
+        let error = diagnostics.axError.map { String($0) } ?? "none"
+        let reason = diagnostics.failureReason ?? "none"
+        diagnose("axEnumeration", detail: "pid=\(instance.pid) start=\(instance.startDate.timeIntervalSince1970) status=\(diagnostics.status.rawValue) listed=\(listed) inspected=\(diagnostics.inspectedElements) confirmed=\(diagnostics.confirmedElements) skipped=\(diagnostics.skippedElements) failedAttribute=\(failedAttribute) axError=\(error) reason=\(reason)")
+        for issue in diagnostics.issues {
+            let failures = issue.failures.map { "\($0.attribute):AX \($0.code)" }.joined(separator: ",")
+            let role = issue.role ?? "unavailable"
+            let subrole = issue.subrole ?? "unavailable"
+            let minimized = issue.minimized.map { String($0) } ?? "unavailable"
+            let canMinimize = issue.canMinimize.map { String($0) } ?? "unavailable"
+            diagnose("axElement", detail: "pid=\(instance.pid) start=\(instance.startDate.timeIntervalSince1970) index=\(issue.index) included=\(issue.included) reason=\(issue.reason) attributes=\(failures.isEmpty ? "none" : failures) role=\(role) subrole=\(subrole) titleReadable=\(issue.titleReadable) minimized=\(minimized) positionReadable=\(issue.positionReadable) sizeReadable=\(issue.sizeReadable) canMinimize=\(canMinimize)")
+        }
+    }
+
+    func axUnavailable(instance: InstanceID, reason: String, diagnostics: AXEnumerationDiagnostics?) {
+        if let diagnostics {
+            axEnumeration(instance: instance, diagnostics: diagnostics)
+            diagnose("axEnumerationUnavailable", detail: "pid=\(instance.pid) start=\(instance.startDate.timeIntervalSince1970) status=unavailable reason=\(reason)")
+        } else {
+            diagnose("axEnumerationUnavailable", detail: "pid=\(instance.pid) start=\(instance.startDate.timeIntervalSince1970) status=unavailable inspected=unknown confirmed=unknown skipped=unknown reason=\(reason)")
+        }
     }
 
     private func acquire() async {
@@ -600,7 +657,11 @@ private final class WindowThumbnailService {
         guard stillCurrent(), !Task.isCancelled, processIsCurrent(instance),
               CGPreflightScreenCaptureAccess() else { return false }
         let refreshed = await accessibility.windows(for: instance)
-        guard case .windows(let latest) = refreshed, latest.count == baseline.count,
+        if case .windows(_, let diagnostics) = refreshed, diagnostics.status == .partial {
+            axEnumeration(instance: instance, diagnostics: diagnostics)
+        }
+        guard case .windows(let latest, let diagnostics) = refreshed,
+              diagnostics.status != .partial, latest.count == baseline.count,
               Set(latest.map(\.identity)) == Set(baseline.map(\.identity)),
               latest.allSatisfy({ now in baseline.contains { $0.captureState == now.captureState } }),
               let current = latest.first(where: { $0.identity == resolution.identity }),

@@ -100,7 +100,7 @@ func tr(_ en: String, _ ru: String) -> String {
            titleRequest?.0 != active || Date().timeIntervalSince(titleRequest?.1 ?? .distantPast) > 10 {
             titleRequest = (active, Date())
             Task {
-                if case .windows(let values) = await accessibility.windows(for: active),
+                if case .windows(let values, _) = await accessibility.windows(for: active),
                    let title = values.first(where: \.isFocused)?.title, monitor.running(active) != nil {
                     windowTitles[active] = title; displays.render(coordinator.snapshot)
                 }
@@ -173,7 +173,7 @@ func tr(_ en: String, _ ru: String) -> String {
             while Date() < deadline {
                 guard monitor.running(opened.id) != nil else { break }
                 switch await accessibility.windows(for: opened.id) {
-                case .windows(let windows):
+                case .windows(let windows, _):
                     windowStateUnavailable = false
                     if !windows.isEmpty { return }
                 case .unavailable:

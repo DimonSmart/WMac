@@ -107,16 +107,17 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
     defer { withExtendedLifetime(observation) {} }
     let axResult = await ax.windows(for: first.id)
     switch axResult {
-    case .unavailable(let message):
+    case .unavailable(let message, _):
         check(!ax.trusted, "without AX, window actions are limited: \(message)")
         print("NOT VERIFIED: AX window enumeration/restore/raise requires an explicit user Accessibility grant to WMacProbe (or the responsible terminal shown by System Settings). WMac.app access is separate. No grant changed.")
-    case .windows(let windows):
+    case .windows(let windows, let diagnostics):
         check(windows.count == 2 && windows.allSatisfy { $0.instance == first.id }, "two standard AX windows belong to exact PID \(first.id.pid)")
+        check(diagnostics.status == .complete, "probe fixture enumeration is complete")
         if let window = windows.first {
             let selected = await ax.select(window)
             check(selected.outcome == .restored && selected.activationAccepted, "service selects and restores exact AX window")
             try? await Task.sleep(for: .milliseconds(350))
-            if case .windows(let focused) = await ax.windows(for: first.id) {
+            if case .windows(let focused, _) = await ax.windows(for: first.id) {
                 check(focused.first(where: \.isFocused)?.id == window.id, "focus follows selected AX identity")
             } else { check(false, "selected state must remain enumerable") }
             print("SELECT RESULT \(selected.message)")
@@ -124,13 +125,13 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
             print("MINIMIZE RESULT \(minimized.message)")
             check(minimized.outcome == .minimized, "service minimizes manageable focused window")
             try? await Task.sleep(for: .milliseconds(250))
-            if case .windows(let values) = await ax.windows(for: first.id) {
+            if case .windows(let values, _) = await ax.windows(for: first.id) {
                 check(values.first(where: { $0.id == window.id })?.isMinimized == true, "real minimized state read back")
             } else { check(false, "minimized state must remain enumerable") }
             let restored = await ax.switchTo(first.id, minimizeIfActive: true, isActive: true)
             print("RESTORE RESULT \(restored.message)")
             try? await Task.sleep(for: .milliseconds(300))
-            if case .windows(let values) = await ax.windows(for: first.id) {
+            if case .windows(let values, _) = await ax.windows(for: first.id) {
                 check(restored.outcome == .restored && values.first(where: { $0.id == window.id })?.isMinimized == false && NSWorkspace.shared.frontmostApplication?.processIdentifier == first.id.pid,
                       "subsequent toggle restores same window and activates exact PID")
             } else { check(false, "restored state must remain enumerable") }
@@ -141,11 +142,11 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
                 try? await Task.sleep(for: .milliseconds(250))
                 print("SWITCH RESULT \((await ax.switchTo(first.id)).message)")
                 try? await Task.sleep(for: .milliseconds(300))
-                if case .windows(let values) = await ax.windows(for: first.id) {
+                if case .windows(let values, _) = await ax.windows(for: first.id) {
                     check(values.first(where: \.isFocused)?.id == other.id, "ordinary switch restores last-active window among multiple windows")
                     check(await closeFocusedFixtureWindow(first.id), "close fixture's focused actual AX window")
                     try? await Task.sleep(for: .milliseconds(300))
-                    if case .windows(let remaining) = await ax.windows(for: first.id) {
+                    if case .windows(let remaining, _) = await ax.windows(for: first.id) {
                         check(remaining.count == 1 && !remaining.contains(where: { $0.id == other.id }), "destroyed window disappears from snapshot")
                     } else { check(false, "surviving window remains enumerable") }
                     let vanished = await ax.select(other)
