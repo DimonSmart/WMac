@@ -1,0 +1,255 @@
+{
+  "axTrusted" : true,
+  "date" : "2026-10-28T13:20:28Z",
+  "live" : [
+    {
+      "axFrame" : [
+        0,
+        33,
+        1728,
+        994
+      ],
+      "axIndex" : 0,
+      "bundle" : "com.microsoft.edgemac",
+      "capture" : {
+        "height" : 253,
+        "success" : true,
+        "width" : 440
+      },
+      "exactCandidates" : [
+        {
+          "applicationSuffixFound" : true,
+          "axFormatScalarCount" : 0,
+          "axIsSCPrefix" : false,
+          "axTitleLength" : 67,
+          "frame" : [
+            0,
+            33,
+            1728,
+            994
+          ],
+          "id" : 60,
+          "normalizedTitleEqual" : false,
+          "scFormatScalarCount" : 0,
+          "scIsAXPrefix" : true,
+          "scTitleEmpty" : false,
+          "scTitleLength" : 39,
+          "titleEqual" : false,
+          "titleEqualAfterRemovingApplicationSuffix" : true
+        }
+      ],
+      "minimized" : false,
+      "old" : "unmatched",
+      "pid" : 718,
+      "proposed" : "matched(60)"
+    },
+    {
+      "axFrame" : [
+        0,
+        33,
+        1728,
+        1084
+      ],
+      "axIndex" : 1,
+      "bundle" : "com.microsoft.edgemac",
+      "capture" : {
+        "height" : 276,
+        "success" : true,
+        "width" : 440
+      },
+      "exactCandidates" : [
+        {
+          "applicationSuffixFound" : true,
+          "axFormatScalarCount" : 0,
+          "axIsSCPrefix" : false,
+          "axTitleLength" : 85,
+          "frame" : [
+            0,
+            33,
+            1728,
+            1084
+          ],
+          "id" : 51,
+          "normalizedTitleEqual" : false,
+          "scFormatScalarCount" : 0,
+          "scIsAXPrefix" : false,
+          "scTitleEmpty" : false,
+          "scTitleLength" : 59,
+          "titleEqual" : false,
+          "titleEqualAfterRemovingApplicationSuffix" : false
+        }
+      ],
+      "minimized" : false,
+      "old" : "unmatched",
+      "pid" : 718,
+      "proposed" : "matched(51)"
+    },
+    {
+      "axFrame" : [
+        343,
+        156,
+        1100,
+        748
+      ],
+      "axIndex" : 0,
+      "bundle" : "com.dimonsmart.csharpfar",
+      "capture" : {
+        "height" : 299,
+        "success" : true,
+        "width" : 440
+      },
+      "exactCandidates" : [
+        {
+          "applicationSuffixFound" : false,
+          "axFormatScalarCount" : 0,
+          "axIsSCPrefix" : true,
+          "axTitleLength" : 9,
+          "frame" : [
+            343,
+            156,
+            1100,
+            748
+          ],
+          "id" : 5628,
+          "normalizedTitleEqual" : true,
+          "scFormatScalarCount" : 0,
+          "scIsAXPrefix" : true,
+          "scTitleEmpty" : false,
+          "scTitleLength" : 9,
+          "titleEqual" : true,
+          "titleEqualAfterRemovingApplicationSuffix" : true
+        }
+      ],
+      "minimized" : false,
+      "old" : "matched(5628)",
+      "pid" : 25913,
+      "proposed" : "matched(5628)"
+    }
+  ],
+  "screenCapture" : true,
+  "synthetic" : [
+    {
+      "expected" : [
+        "matched(1)"
+      ],
+      "name" : "unique geometry, decorated title",
+      "old" : [
+        "unmatched"
+      ],
+      "pass" : true,
+      "proposed" : [
+        "matched(1)"
+      ]
+    },
+    {
+      "expected" : [
+        "matched(1)"
+      ],
+      "name" : "unique geometry, empty SC title",
+      "old" : [
+        "unmatched"
+      ],
+      "pass" : true,
+      "proposed" : [
+        "matched(1)"
+      ]
+    },
+    {
+      "expected" : [
+        "ambiguous"
+      ],
+      "name" : "two SC windows same frame",
+      "old" : [
+        "unmatched"
+      ],
+      "pass" : true,
+      "proposed" : [
+        "ambiguous"
+      ]
+    },
+    {
+      "expected" : [
+        "ambiguous",
+        "ambiguous"
+      ],
+      "name" : "two AX windows same frame",
+      "old" : [
+        "unmatched",
+        "unmatched"
+      ],
+      "pass" : true,
+      "proposed" : [
+        "ambiguous",
+        "ambiguous"
+      ]
+    },
+    {
+      "expected" : [
+        "unmatched"
+      ],
+      "name" : "minimized target",
+      "old" : [
+        "unmatched"
+      ],
+      "pass" : true,
+      "proposed" : [
+        "unmatched"
+      ]
+    },
+    {
+      "expected" : [
+        "unmatched"
+      ],
+      "name" : "missing geometry",
+      "old" : [
+        "unmatched"
+      ],
+      "pass" : true,
+      "proposed" : [
+        "unmatched"
+      ]
+    },
+    {
+      "expected" : [
+        "unmatched"
+      ],
+      "name" : "outside exact tolerance",
+      "old" : [
+        "unmatched"
+      ],
+      "pass" : true,
+      "proposed" : [
+        "unmatched"
+      ]
+    },
+    {
+      "expected" : [
+        "unmatched",
+        "unmatched"
+      ],
+      "name" : "stale AX, two distinct windows swapped positions",
+      "old" : [
+        "unmatched",
+        "unmatched"
+      ],
+      "pass" : false,
+      "proposed" : [
+        "matched(2)",
+        "matched(1)"
+      ]
+    },
+    {
+      "expected" : [
+        "unmatched"
+      ],
+      "name" : "stale AX, closed window replaced at same frame",
+      "old" : [
+        "unmatched"
+      ],
+      "pass" : false,
+      "proposed" : [
+        "matched(2)"
+      ]
+    }
+  ]
+}
