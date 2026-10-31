@@ -435,5 +435,7 @@ for width: CGFloat in [480, 1440, 1920] {
     check(regions.launcher.maxX <= regions.previous.minX && regions.next.maxX <= regions.clock.minX && regions.clock.maxX <= regions.controls.minX && regions.controls.maxX <= width, "overflow never covers persistent clock or controls at width \(width)")
 }
 check(!PanelRegions(width: 1440, contentWidth: 88).overflow, "short process lists are centered without overflow controls")
+try testApplicationUpdates(check)
+try await testUpdateDiskImage(check)
 print("UNIT RESULT failures=\(failures)")
 exit(failures == 0 ? 0 : 1)

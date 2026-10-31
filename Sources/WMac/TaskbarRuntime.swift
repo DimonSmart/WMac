@@ -17,6 +17,8 @@ func tr(_ en: String, _ ru: String) -> String {
     lazy var displays = DisplayCoordinator(runtime: self)
     lazy var previews = WindowPreviewController(runtime: self)
     lazy var windowArrangementShortcuts = WindowArrangementShortcuts(accessibility: accessibility, permissions: permissions)
+    private var updateRestartReady = false
+    let updates = ApplicationUpdateController()
     let settings = SettingsController()
     let dockVisibility = SystemDockVisibilityService()
     private var dockAttempted = false
@@ -40,6 +42,24 @@ func tr(_ en: String, _ ru: String) -> String {
     private var titleRequest: (InstanceID, Date)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if let index = CommandLine.arguments.firstIndex(of: "--updated-from-pid"),
+           CommandLine.arguments.indices.contains(index + 1),
+           let pid = Int32(CommandLine.arguments[index + 1]), pid > 0 {
+            // Acknowledge launch to LaunchServices before waiting for the old instance.
+            Task {
+                let previous = NSRunningApplication(processIdentifier: pid)
+                let deadline = Date().addingTimeInterval(30)
+                while previous?.isTerminated == false && Date() < deadline {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                if previous?.isTerminated == false { exit(1) }
+                finishLaunching()
+            }
+        } else {
+            finishLaunching()
+        }
+    }
+    private func finishLaunching() {
         NSApp.setActivationPolicy(.accessory)
         dockVisibility.recoverAtLaunch()
         dockVisibility.changed = { [weak self] in
@@ -88,6 +108,15 @@ func tr(_ en: String, _ ru: String) -> String {
                 instructions()
             }
         }
+        updates.changed = { [weak self] in self?.refreshMenus() }
+        updates.prepareRestart = { [weak self] in
+            guard let self else { return }
+            await settings.settled()
+            await pinMutations.wait()
+            dockVisibility.restore()
+            updateRestartReady = true
+        }
+        updates.start()
         settings.load()
         pinMutations.load()
         if CommandLine.arguments.contains("--settings") { showSettings() }
@@ -259,6 +288,7 @@ func tr(_ en: String, _ ru: String) -> String {
             menu.addItem(value)
         }
         item("About WMac!", "О WMac!", #selector(about))
+        updates.addCommands(to: menu)
         menu.addItem(.separator())
         item("Settings…", "Настройки…", #selector(showSettings), key: ",")
         item("Help", "Справка", #selector(instructions))
@@ -283,6 +313,7 @@ func tr(_ en: String, _ ru: String) -> String {
         menu.addItem(.separator())
         item("Settings…", "Настройки…", #selector(showSettings), key: ",")
         item("About WMac!", "О WMac!", #selector(about))
+        updates.addCommands(to: menu)
         item("Help", "Справка", #selector(instructions))
         menu.addItem(.separator())
         item("Quit WMac!", "Выйти из WMac!", #selector(quit), key: "q")
@@ -461,6 +492,7 @@ func tr(_ en: String, _ ru: String) -> String {
         }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if updates.installing && !updateRestartReady { return .terminateCancel }
         Task {
             await settings.settled()
             await pinMutations.wait()
