@@ -1,8 +1,26 @@
 import AppKit
 
+@MainActor enum BuildIdentity {
+    static var isLocal: Bool { _isDebugAssertConfiguration() }
+    static var name: String { isLocal ? "WMac! L" : "WMac!" }
+    static func icon(_ original: NSImage?) -> NSImage? {
+        guard isLocal, let original else { return original }
+        let image = NSImage(size: NSSize(width: 256, height: 256))
+        image.lockFocus()
+        original.draw(in: NSRect(x: 0, y: 0, width: 256, height: 256))
+        NSColor.systemOrange.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 164, y: 0, width: 92, height: 92)).fill()
+        ("L" as NSString).draw(at: NSPoint(x: 191, y: 9), withAttributes: [
+            .font: NSFont.boldSystemFont(ofSize: 64), .foregroundColor: NSColor.white
+        ])
+        image.unlockFocus()
+        return image
+    }
+}
+
 @MainActor final class AboutWindowController: NSWindowController, NSWindowDelegate {
     init() {
-        let window = NSWindow(contentRect: NSRect(x:0,y:0,width:500,height:478),
+        let window = NSWindow(contentRect: NSRect(x:0,y:0,width:500,height:550),
             styleMask:[.titled,.closable],backing:.buffered,defer:false)
         window.title = tr("About WMac!","О WMac!")
         window.titleVisibility = .hidden
@@ -31,7 +49,7 @@ import AppKit
         // Load our bundled artwork directly: applicationIconImage can be unset or cached.
         let icon = Bundle.main.url(forResource:"AppIcon",withExtension:"icns")
             .flatMap { NSImage(contentsOf:$0) }
-        artwork.image = icon ?? NSApp.applicationIconImage
+        artwork.image = BuildIdentity.icon(icon ?? NSApp.applicationIconImage)
         artwork.setAccessibilityLabel(tr("An apple caught in a windowpane","Яблоко застряло в оконном стекле"))
         artwork.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -40,7 +58,7 @@ import AppKit
         ])
         stack.addArrangedSubview(artwork)
         stack.setCustomSpacing(5,after:artwork)
-        stack.addArrangedSubview(label("WMac!",size:32,weight:.bold))
+        stack.addArrangedSubview(label(BuildIdentity.name,size:32,weight:.bold))
 
         let subtitle = label(tr("Your taskbar for macOS","Ваша панель задач для macOS"),size:15,weight:.medium)
         subtitle.textColor = .secondaryLabelColor
@@ -50,7 +68,17 @@ import AppKit
         let number = label(tr("Version \(version) (\(build))","Версия \(version) (\(build))"),size:12,weight:.regular)
         number.textColor = .tertiaryLabelColor
         stack.addArrangedSubview(number)
-        stack.setCustomSpacing(22,after:number)
+        let channel = label(BuildIdentity.isLocal
+            ? tr("L · Local Debug build", "L · Локальная Debug-сборка")
+            : tr("Release build", "Релизная сборка"), size:12, weight:.medium)
+        stack.addArrangedSubview(channel)
+        let location = label(Bundle.main.bundleURL.path, size:11, weight:.regular)
+        location.isSelectable = true
+        location.maximumNumberOfLines = 3
+        location.preferredMaxLayoutWidth = 400
+        location.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(location)
+        stack.setCustomSpacing(15,after:location)
 
         let separator = NSBox()
         separator.boxType = .separator

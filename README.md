@@ -2,6 +2,30 @@
 
 Native Swift/AppKit taskbar for macOS 14+. The default runtime now displays one nonactivating panel per connected display, saved pins and real process buttons, exact-instance switching and menus, independent launch requests, horizontal overflow, clock/date and persistent WMac menu bar controls. This is an **intermediate development build**, not the completed MVP. Persistent native settings and explicit login registration controls are implemented; local universal DMG preparation is implemented. Pin gestures are implemented; actual Finder-drop acceptance and the broader accessibility/display matrix still need manual verification.
 
+## Install, update, and switch between builds
+
+From a checkout of the official repository (Xcode command line tools and Python 3 required):
+
+```sh
+./scripts/install.sh       # download, verify, install stable GitHub release, then launch
+./scripts/run.sh release   # launch exactly ~/Applications/WMac.app
+./scripts/run.sh           # build and launch local Debug (run signing setup once first)
+```
+
+For a fresh checkout:
+
+```sh
+git clone https://github.com/DimonSmart/WMac.git
+cd WMac
+./scripts/install.sh
+```
+
+The installer reads the latest stable GitHub release, verifies its GitHub SHA-256 and the packaged application, and installs into `~/Applications/WMac.app`. A previous installation is retained in `~/Applications/.WMacPrevious.*/WMac.app`. It preserves macOS quarantine and trust settings; ordinary first-launch approval may be required. Repeat the install command to install the latest official release, or use **Check for Updates…** and **Automatically check for updates** in the installed application's menu. Background checks run on launch and daily; installing an offered update requires your action.
+
+If window minimization does not work after installing or updating, open Settings → Permissions in WMac and check Accessibility. The first window action without access shows a nonmodal explanation with an **Open Settings…** button, once per launch. Enable the currently installed WMac in macOS Privacy & Security → Accessibility; a previous build's grant may not cover an updated ad-hoc signed build. Process switching remains available without that permission.
+
+Both launch commands gracefully quit other running WMac copies and wait for their settings save and Dock restoration before opening the exact selected path. Local Debug displays **L** beside its menu bar symbol and on the application icon. About shows Debug/Release, version/build and the actual bundle path. A Release build in `.build/` is still a local artifact; its path identifies it. The two modes share settings, pins, and bundle identity. Use one at a time. Plain `open -a WMac` can select an unintended registered copy; use these explicit commands.
+
 Open `WMac.xcodeproj` in Xcode and run the shared **WMac** scheme, or use:
 
 ```sh
@@ -70,7 +94,7 @@ Launch at login is controlled only by explicit Enable/Disable actions through `S
 ## Prepare a GitHub Releases DMG
 
 ```sh
-./scripts/release.sh               # default version 0.1.0, build 1
+./scripts/release.sh               # default version 0.2.1, build 3
 ./scripts/release.sh 0.1.1 2       # explicit numeric major.minor[.patch], positive build
 ```
 

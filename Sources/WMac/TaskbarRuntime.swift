@@ -34,6 +34,7 @@ func tr(_ en: String, _ ru: String) -> String {
     private var message = ""
     private var detail = ""
     private var permissionExplained = false
+    private var permissionNotice: NSPanel?
     private var infoWindow: NSWindow?
     private let icons = PanelIcons()
     private var images: [PanelIconSource: NSImage] = [:]
@@ -67,9 +68,11 @@ func tr(_ en: String, _ ru: String) -> String {
             self?.refreshMenus()
         }
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        status.button?.title = "W"
-        status.button?.toolTip = "WMac!"
+        status.button?.title = BuildIdentity.isLocal ? "L" : "W"
+        status.button?.toolTip = BuildIdentity.name + " — " + Bundle.main.bundleURL.path
         status.button?.image = NSImage(systemSymbolName: "rectangle.bottomthird.inset.filled", accessibilityDescription: "WMac!")
+        NSApp.applicationIconImage = BuildIdentity.icon(
+            Bundle.main.url(forResource: "AppIcon", withExtension: "icns").flatMap { NSImage(contentsOf: $0) })
         status.menu = controlsMenu()
         let main = NSMenu(); let applicationItem = NSMenuItem(title: "WMac!", action: nil, keyEquivalent: "")
         applicationItem.submenu = applicationMenu(); main.addItem(applicationItem); NSApp.mainMenu = main
@@ -162,14 +165,16 @@ func tr(_ en: String, _ ru: String) -> String {
         guard valid(capture) else { notify(tr("This instance is no longer available", "Экземпляр больше недоступен")); return }
         if new || capture.instance == nil { launch(capture, independent: new); return }
         guard let id = capture.instance else { return }
-        explainPermission()
+        let wasActive = coordinator.snapshot.activeInstance == id
+            && NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid
         Task {
             guard valid(capture) else { return }
-            let result = await accessibility.switchTo(id, minimizeIfActive: true, isActive: coordinator.snapshot.activeInstance == id && NSWorkspace.shared.frontmostApplication?.processIdentifier == id.pid)
+            let result = await accessibility.switchTo(id, minimizeIfActive: true, isActive: wasActive)
             if result.outcome == .noManageableWindows {
                 await requestReopen(capture, instance: id)
             } else if result.outcome == .activatedOnly || result.outcome == .unavailable {
                 notify(tr("Window control limited — process switching remains available", "Управление окнами ограничено — переключение процесса доступно"), result.message)
+                explainPermission()
             }
         }
     }
@@ -276,9 +281,53 @@ func tr(_ en: String, _ ru: String) -> String {
     private func explainPermission() {
         guard !permissions.trusted, !permissionExplained else { return }
         permissionExplained = true
-        notify(tr("Window control needs Accessibility; enable it from the WMac menu", "Для управления окнами включите Универсальный доступ в меню WMac"))
-        // Permission request follows this explicit user window-control action only.
-        permissions.requestAccessFromUserAction()
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 190),
+                            styleMask: [.titled, .closable, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.title = tr("Window control needs permission", "Для управления окнами нужно разрешение")
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        panel.level = .floating
+        let content = NSStackView()
+        content.orientation = .vertical
+        content.alignment = .leading
+        content.spacing = 18
+        content.translatesAutoresizingMaskIntoConstraints = false
+        let text = NSTextField(wrappingLabelWithString: tr(
+            "To minimize and restore windows, allow WMac in System Settings → Privacy & Security → Accessibility. Switching to an application still works without this permission.",
+            "Чтобы сворачивать и восстанавливать окна, разрешите WMac доступ в Системных настройках → Конфиденциальность и безопасность → Универсальный доступ. Переключение на приложение работает и без разрешения."))
+        text.font = .systemFont(ofSize: 13)
+        text.preferredMaxLayoutWidth = 412
+        content.addArrangedSubview(text)
+        let buttons = NSStackView()
+        buttons.spacing = 12
+        let configure = NSButton(title: tr("Open Settings…", "Открыть настройки…"),
+                                 target: self, action: #selector(configureWindowPermission))
+        configure.bezelStyle = .rounded
+        let later = NSButton(title: tr("Later", "Позже"), target: self, action: #selector(dismissPermissionNotice))
+        later.bezelStyle = .rounded
+        later.keyEquivalent = "\u{1b}"
+        buttons.addArrangedSubview(configure)
+        buttons.addArrangedSubview(later)
+        content.addArrangedSubview(buttons)
+        if let view = panel.contentView {
+            view.addSubview(content)
+            NSLayoutConstraint.activate([
+                content.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+                content.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
+                content.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+                content.topAnchor.constraint(greaterThanOrEqualTo: view.topAnchor, constant: 20),
+                content.bottomAnchor.constraint(lessThanOrEqualTo: view.bottomAnchor, constant: -20)
+            ])
+        }
+        permissionNotice = panel
+        panel.center()
+        // Keep the selected process active; this explanation never runs a modal loop.
+        panel.makeKeyAndOrderFront(nil)
+    }
+    @objc private func dismissPermissionNotice() { permissionNotice?.close(); permissionNotice = nil }
+    @objc private func configureWindowPermission() {
+        dismissPermissionNotice()
+        permissions.openSettingsFromUserAction()
     }
     private func applicationMenu() -> NSMenu {
         let menu = NSMenu(title: "WMac!")
@@ -414,7 +463,7 @@ func tr(_ en: String, _ ru: String) -> String {
     @objc func quit() { NSApp.terminate(nil) }
     @objc func about() { aboutWindow.show() }
     @objc func instructions() { showInfo(tr("Instructions", "Инструкция"), tr("Click an instance to switch. Shift-click or middle-click requests a new independent process. Right-click for windows and process actions. Use Tab and Space for buttons, Control-click or Shift-F10 for menus.\n\nWMac coexists with the system Dock. You may enable Dock auto-hide or move it to a side in System Settings → Desktop & Dock. WMac can temporarily hide Dock with explicit consent in General settings; it restores the original preferences when the mode is disabled or WMac quits. It never reserves screen space. Hide panels from the menu bar if they interfere. Fullscreen and Spaces behavior needs verification on your display setup.", "Нажмите на экземпляр для переключения. Shift-клик или средний клик запрашивает новый процесс. Правый клик открывает окна и действия. Tab и пробел управляют кнопками, Control-клик или Shift-F10 — меню.\n\nСистемный Dock остаётся доступен. Автоскрытие или расположение сбоку можно включить в Системных настройках → Рабочий стол и Dock. WMac может временно скрывать Dock по вашему выбору в разделе «Общие», восстанавливая прежние параметры при выключении режима или выходе. Экранное пространство не резервируется. При необходимости скройте панели из строки меню. Полноэкранный режим и Spaces требуют проверки на вашем оборудовании.")) }
-    @objc func requestPermission() { permissionExplained = true; permissions.requestAccessFromUserAction() }
+    @objc func requestPermission() { permissions.requestAccessFromUserAction() }
     @objc func permissionSettings() { permissions.openSettingsFromUserAction() }
     func requestScreenRecording() {
         // Only explicit user actions may initiate a TCC request.
