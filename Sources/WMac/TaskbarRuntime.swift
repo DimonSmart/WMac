@@ -111,7 +111,11 @@ func tr(_ en: String, _ ru: String) -> String {
                 instructions()
             }
         }
-        updates.changed = { [weak self] in self?.refreshMenus() }
+        updates.changed = { [weak self] in
+            guard let self else { return }
+            if !updates.installing { updateRestartReady = false }
+            refreshMenus()
+        }
         updates.prepareRestart = { [weak self] in
             guard let self else { return }
             await settings.settled()
@@ -541,6 +545,10 @@ func tr(_ en: String, _ ru: String) -> String {
         }
     }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // The updater already awaited persistence and restored Dock. Returning
+        // terminateLater here would queue a MainActor task while terminate()
+        // is still occupying that actor inside AppKit's nested termination loop.
+        if updates.installing && updateRestartReady { return .terminateNow }
         if updates.installing && !updateRestartReady { return .terminateCancel }
         Task {
             await settings.settled()

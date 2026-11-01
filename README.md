@@ -22,6 +22,8 @@ cd WMac
 
 The installer reads the latest stable GitHub release, verifies its GitHub SHA-256 and the packaged application, and installs into `~/Applications/WMac.app`. A previous installation is retained in `~/Applications/.WMacPrevious.*/WMac.app`. It preserves macOS quarantine and trust settings; ordinary first-launch approval may be required. Repeat the install command to install the latest official release, or use **Check for Updates…** and **Automatically check for updates** in the installed application's menu. Background checks run on launch and daily; installing an offered update requires your action.
 
+If an update started by WMac 0.2.0 or 0.2.1 has installed the new files but remains on “Updating WMac”, the old process may be stuck during exit. After its data save and Dock restoration, quit that stuck WMac process using Activity Monitor, then run `./scripts/run.sh release`. Version 0.2.2 fixes this termination deadlock for subsequent updates. The command-line installer is also available for manual upgrades.
+
 If window minimization does not work after installing or updating, open Settings → Permissions in WMac and check Accessibility. The first window action without access shows a nonmodal explanation with an **Open Settings…** button, once per launch. Enable the currently installed WMac in macOS Privacy & Security → Accessibility; a previous build's grant may not cover an updated ad-hoc signed build. Process switching remains available without that permission.
 
 Both launch commands gracefully quit other running WMac copies and wait for their settings save and Dock restoration before opening the exact selected path. Local Debug displays **L** beside its menu bar symbol and on the application icon. About shows Debug/Release, version/build and the actual bundle path. A Release build in `.build/` is still a local artifact; its path identifies it. The two modes share settings, pins, and bundle identity. Use one at a time. Plain `open -a WMac` can select an unintended registered copy; use these explicit commands.
@@ -94,7 +96,7 @@ Launch at login is controlled only by explicit Enable/Disable actions through `S
 ## Prepare a GitHub Releases DMG
 
 ```sh
-./scripts/release.sh               # default version 0.2.1, build 3
+./scripts/release.sh               # default version 0.2.2, build 4
 ./scripts/release.sh 0.1.1 2       # explicit numeric major.minor[.patch], positive build
 ```
 

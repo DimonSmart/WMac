@@ -4,10 +4,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 root="$PWD"
 fail() { echo "ERROR: $*" >&2; exit 1; }
-usage() { echo 'Usage: ./scripts/release.sh [VERSION BUILD] (defaults: 0.2.1 3)'; }
+usage() { echo 'Usage: ./scripts/release.sh [VERSION BUILD] (defaults: 0.2.2 4)'; }
 if [[ $# == 1 && "$1" == --help ]]; then usage; exit 0; fi
 [[ $# == 0 || $# == 2 ]] || { usage >&2; exit 2; }
-version="${1:-0.2.1}"; build="${2:-3}"
+version="${1:-0.2.2}"; build="${2:-4}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || fail 'VERSION must be numeric major.minor[.patch]'
 [[ "$build" =~ ^[1-9][0-9]*$ ]] || fail 'BUILD must be a positive integer'
 for tool in xcodebuild codesign hdiutil ditto lipo shasum; do
