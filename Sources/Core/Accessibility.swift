@@ -27,6 +27,7 @@ struct WindowReference: Identifiable, Equatable, Sendable {
     var stateRevision: UInt64 = 0
     var role: String? = nil
     var subrole: String? = nil
+    var canClose: Bool = false
 
     var identity: WindowIdentity { WindowIdentity(instance: instance, axID: id, lifecycle: lifecycle) }
     var captureState: WindowCaptureState {
@@ -38,9 +39,9 @@ enum WindowResult: Sendable {
     case windows([WindowReference], AXEnumerationDiagnostics)
     case unavailable(String, AXEnumerationDiagnostics?)
 }
-enum WindowAction: Sendable { case restore, minimize }
+enum WindowAction: Sendable { case restore, minimize, close }
 struct WindowActionResult: Sendable {
-    enum Outcome: Equatable, Sendable { case restored, minimized, arranged, noManageableWindows, activatedOnly, unavailable }
+    enum Outcome: Equatable, Sendable { case restored, minimized, arranged, closeRequested, noManageableWindows, activatedOnly, unavailable }
     let outcome: Outcome
     let message: String
     let activationAccepted: Bool
@@ -77,6 +78,7 @@ struct AXWindowValue: @unchecked Sendable {
     var frame: CGRect? = nil
     var role: String? = nil
     var subrole: String? = nil
+    var canClose: Bool = false
 }
 struct AXAttributeFailure: Equatable, Sendable {
     let attribute: String
@@ -215,7 +217,11 @@ struct AccessibilityBoundary: Sendable {
                                              canMinimize: settableError == .success ? settable.boolValue : nil,
                                              canMinimizeError: settableError.rawValue)
             switch Self.classify(facts, focused: focused.map { CFEqual($0, element) } ?? false) {
-            case .included(let window, let issue):
+            case .included(var window, let issue):
+                var closeButton: CFTypeRef?
+                let closeButtonResult = AXUIElementCopyAttributeValue(window.element, kAXCloseButtonAttribute as CFString, &closeButton)
+                window.canClose = closeButtonResult == .success
+                    && closeButton.map { CFGetTypeID($0) == AXUIElementGetTypeID() } == true
                 windows.append(window)
                 if let issue { issues.append(issue) }
             case .excluded(let issue):
@@ -242,6 +248,26 @@ struct AccessibilityBoundary: Sendable {
         }
         guard valid() else { return "Window process lifetime no longer matches." }
         AXUIElementSetMessagingTimeout(element, 0.5)
+        if case .close = action {
+            var closeButtonValue: CFTypeRef?
+            let closeButtonResult = AXUIElementCopyAttributeValue(element, kAXCloseButtonAttribute as CFString, &closeButtonValue)
+            guard closeButtonResult == .success, let closeButtonValue,
+                  CFGetTypeID(closeButtonValue) == AXUIElementGetTypeID() else {
+                return "The selected window does not expose an Accessibility close button."
+            }
+            let closeButton = closeButtonValue as! AXUIElement
+            var closeButtonPID: pid_t = 0
+            guard AXUIElementGetPid(closeButton, &closeButtonPID) == .success,
+                  closeButtonPID == id.pid, valid() else {
+                return "The selected window close button no longer matches the process."
+            }
+            AXUIElementSetMessagingTimeout(closeButton, 0.5)
+            let closeResult = AXUIElementPerformAction(closeButton, kAXPressAction as CFString)
+            guard closeResult == .success else {
+                return "The application rejected the window close request (AX \(closeResult.rawValue))."
+            }
+            return nil
+        }
         let minimized = AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString,
                                                      action == .minimize ? kCFBooleanTrue : kCFBooleanFalse)
         guard minimized == .success else { return "Cannot change window minimization (AX \(minimized.rawValue))." }
@@ -463,14 +489,15 @@ final class AccessibilityService: @unchecked Sendable {
                 let lifecycle = old?.lifecycle ?? nextWindowLifecycle
                 let changed = old == nil || old?.title != value.title || old?.frame != value.frame ||
                     old?.isMinimized != value.minimized || old?.isFocused != value.focused ||
-                    old?.canMinimize != value.canMinimize || old?.role != value.role || old?.subrole != value.subrole
+                    old?.canMinimize != value.canMinimize || old?.canClose != value.canClose ||
+                    old?.role != value.role || old?.subrole != value.subrole
                 if changed { nextObservedRevision &+= 1 }
                 let snapshot = WindowReference(id: old?.id ?? UUID(), instance: id, title: value.title,
                                                isMinimized: value.minimized, isFocused: value.focused,
                                                canMinimize: value.canMinimize, frame: value.frame,
                                                lifecycle: lifecycle,
                                                stateRevision: changed ? nextObservedRevision : (old?.stateRevision ?? 0),
-                                               role: value.role, subrole: value.subrole)
+                                               role: value.role, subrole: value.subrole, canClose: value.canClose)
                 refreshed.append(Record(snapshot: snapshot, element: value.element))
             }
             state.records = refreshed
@@ -565,6 +592,31 @@ final class AccessibilityService: @unchecked Sendable {
     private struct Prepared: Sendable { let outcome: WindowActionResult.Outcome; let message: String }
     func select(_ window: WindowReference) async -> WindowActionResult {
         await act(window.instance, selected: window.id, toggle: false, active: false)
+    }
+    func close(_ window: WindowReference) async -> WindowActionResult {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                func result(_ outcome: WindowActionResult.Outcome, _ message: String) -> WindowActionResult {
+                    WindowActionResult(outcome: outcome, message: message, activationAccepted: false)
+                }
+                guard self.boundary.trusted() else {
+                    continuation.resume(returning: result(.unavailable, "Closing a window needs Accessibility permission.")); return
+                }
+                guard case .windows = self.refresh(window.instance),
+                      let state = self.states[window.instance],
+                      let record = state.records.first(where: { $0.snapshot.identity == window.identity }) else {
+                    continuation.resume(returning: result(.unavailable, "The selected window is no longer available.")); return
+                }
+                guard record.snapshot.canClose else {
+                    continuation.resume(returning: result(.unavailable, "The selected window does not expose an Accessibility close button.")); return
+                }
+                guard let error = self.boundary.perform(window.instance, record.element, .close) else {
+                    self.publishChange(window.instance)
+                    continuation.resume(returning: result(.closeRequested, "Close request sent to the selected window.")); return
+                }
+                continuation.resume(returning: result(.unavailable, error))
+            }
+        }
     }
     func switchTo(_ instance: InstanceID, minimizeIfActive: Bool = false, isActive: Bool = false) async -> WindowActionResult {
         await act(instance, selected: nil, toggle: minimizeIfActive, active: isActive)

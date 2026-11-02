@@ -22,6 +22,7 @@ struct ApplicationCatalogScanner: Sendable {
     static var standardRoots: [URL] {
         [URL(fileURLWithPath: "/Applications", isDirectory: true),
          URL(fileURLWithPath: "/System/Applications", isDirectory: true),
+         URL(fileURLWithPath: "/System/Library/CoreServices/Finder.app", isDirectory: true),
          FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications", isDirectory: true)]
     }
     var roots: [URL] = Self.standardRoots
@@ -70,8 +71,10 @@ struct ApplicationCatalogScanner: Sendable {
         let contents = url.appendingPathComponent("Contents", isDirectory: true)
         guard let data = try? Data(contentsOf: contents.appendingPathComponent("Info.plist")),
               let info = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
-              info["CFBundlePackageType"] as? String == "APPL",
-              let bundleID = nonempty(info["CFBundleIdentifier"]), !excludedBundleIDs.contains(bundleID),
+              let bundleID = nonempty(info["CFBundleIdentifier"]),
+              (info["CFBundlePackageType"] as? String == "APPL"
+                || (info["CFBundlePackageType"] as? String == "FNDR" && bundleID == "com.apple.finder")),
+              !excludedBundleIDs.contains(bundleID),
               !flag(info["LSBackgroundOnly"]),
               let executable = nonempty(info["CFBundleExecutable"]),
               !executable.contains("/"), executable != ".", executable != "..",

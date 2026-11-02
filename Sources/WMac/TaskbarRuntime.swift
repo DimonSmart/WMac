@@ -895,7 +895,7 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
         case .loading: stateLabel.stringValue = tr("Loading applications…", "Загрузка приложений…")
         case .empty: stateLabel.stringValue = tr("No applications found. Try Refresh.", "Приложения не найдены. Нажмите «Обновить».")
         case .noMatches: stateLabel.stringValue = tr("No matching applications", "Нет подходящих приложений")
-        case .results: stateLabel.stringValue = state.isLoading ? tr("Refreshing…", "Обновление…") : tr("Enter to open · Right-click or Shift-F10 to pin", "Enter — открыть · Правый клик или Shift-F10 — закрепить")
+        case .results: stateLabel.stringValue = state.isLoading ? tr("Refreshing…", "Обновление…") : tr("Enter to open · Right-click or Shift-F10 for actions", "Enter — открыть · Правый клик или Shift-F10 — действия")
         }
         stateLabel.setAccessibilityLabel(stateLabel.stringValue)
     }
@@ -939,6 +939,11 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
         // Freeze the exact definition while a menu is tracking; refresh cannot retarget it.
         let menuSelection = state.results[row]
         let menu = NSMenu()
+        let launch = NSMenuItem(title: tr("Launch New Instance", "Запустить новый экземпляр"),
+                                action: #selector(launchNewInstance(_:)), keyEquivalent: "")
+        launch.target = self; launch.representedObject = menuSelection
+        menu.addItem(launch)
+        menu.addItem(.separator())
         let title = menuSelection.isMenuBarOnly
             ? tr("Menu-bar apps cannot be pinned", "Приложения строки меню нельзя закрепить")
             : tr("Pin", "Закрепить")
@@ -960,6 +965,11 @@ private let pinDragType = NSPasteboard.PasteboardType("app.wmac.pin")
     @objc private func pinSelection(_ sender: NSMenuItem) {
         guard let application = sender.representedObject as? CatalogApplication else { return }
         runtime.pinApplication(application)
+    }
+    @objc private func launchNewInstance(_ sender: NSMenuItem) {
+        guard let application = sender.representedObject as? CatalogApplication else { return }
+        popover.performClose(nil)
+        runtime.launch(application.definition, independent: true)
     }
 }
 

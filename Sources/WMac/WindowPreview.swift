@@ -154,6 +154,7 @@ final class WindowPreviewController {
             (target?.ordinal.map { tr(" — instance \($0)", " — экземпляр \($0)") } ?? "")
         let view = WindowPreviewView(name: name, windows: windows, information: information)
         view.onSelect = { [weak self] window in self?.select(window, capture: capture) }
+        view.onCloseWindow = { [weak self] window in self?.closeWindow(window, capture: capture) }
         view.onRefresh = { [weak self] in self?.openExplicit(capture) }
         view.onEnter = { [weak self] in self?.pointerOnPanel = true; self?.closeTask?.cancel() }
         view.onExit = { [weak self] in self?.pointerOnPanel = false; self?.scheduleClose() }
@@ -188,7 +189,7 @@ final class WindowPreviewController {
         if explicit {
             NSApp.activate()
             popup.makeKey()
-            if let first = view.cards.first { popup.makeFirstResponder(first) }
+            if let first = view.cards.first { popup.makeFirstResponder(first.focusTarget) }
         }
 
         if enumerationComplete { startImages(windows, instance: id, capture: capture, token: token) }
@@ -308,6 +309,16 @@ final class WindowPreviewController {
         }
     }
 
+    private func closeWindow(_ window: WindowReference, capture: ButtonCapture) {
+        Task { @MainActor [weak self] in
+            guard let self, self.runtime.valid(capture), capture.instance == window.instance else { return }
+            let result = await self.runtime.accessibility.close(window)
+            if result.outcome != .closeRequested {
+                self.runtime.notify(tr("Could not close window", "Не удалось закрыть окно"), result.message)
+            }
+        }
+    }
+
     private func place(size: NSSize, near button: NSView?) -> NSRect {
         if let button, let window = button.window {
             let buttonRect = window.convertToScreen(button.convert(button.bounds, to: nil))
@@ -365,20 +376,30 @@ private final class WindowPreviewPanel: NSPanel {
 }
 
 @MainActor
-private final class WindowPreviewCard: NSButton {
+private final class WindowPreviewCard: NSView {
     private(set) var windowReference: WindowReference
+    private let selectControl = NSButton(frame: .zero)
     private let picture = NSImageView()
     private let titleField = NSTextField(labelWithString: "")
     private let stateField = NSTextField(labelWithString: "")
+    private let closeControl = NSButton(frame: .zero)
     var choose: ((WindowReference) -> Void)?
+    var closeWindow: ((WindowReference) -> Void)?
+    var focusTarget: NSView { selectControl }
     init(_ reference: WindowReference) {
         windowReference = reference
         super.init(frame: NSRect(x: 0, y: 0, width: 232, height: 190))
-        title = ""
-        isBordered = false
         wantsLayer = true
         layer?.cornerRadius = 8
         layer?.backgroundColor = (reference.isFocused ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.22) : NSColor.controlBackgroundColor).cgColor
+        selectControl.frame = bounds
+        selectControl.autoresizingMask = [.width, .height]
+        selectControl.title = ""
+        selectControl.isBordered = false
+        selectControl.target = self
+        selectControl.action = #selector(pick)
+        selectControl.setAccessibilityRole(.button)
+        addSubview(selectControl)
         picture.frame = NSRect(x: 6, y: 44, width: 220, height: 140)
         picture.image = NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil)
         picture.imageScaling = .scaleProportionallyUpOrDown
@@ -390,23 +411,38 @@ private final class WindowPreviewCard: NSButton {
         stateField.font = .systemFont(ofSize: 11)
         stateField.textColor = .secondaryLabelColor
         stateField.stringValue = reference.isMinimized ? tr("Minimized", "Свёрнуто") : (reference.isFocused ? tr("Active", "Активно") : "")
-        for view in [picture, titleField, stateField] { addSubview(view) }
-        toolTip = reference.title
-        setAccessibilityLabel(reference.title + (reference.isMinimized ? tr(", minimized", ", свёрнуто") : "") + (reference.isFocused ? tr(", active", ", активно") : ""))
-        setAccessibilityRole(.button)
-        target = self; action = #selector(pick)
+        for view in [picture, titleField, stateField] { selectControl.addSubview(view) }
+        closeControl.frame = NSRect(x: 198, y: 156, width: 26, height: 26)
+        closeControl.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)
+        closeControl.imagePosition = .imageOnly
+        closeControl.isBordered = false
+        closeControl.wantsLayer = true
+        closeControl.layer?.cornerRadius = 13
+        closeControl.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.88).cgColor
+        closeControl.contentTintColor = .labelColor
+        closeControl.toolTip = tr("Close window", "Закрыть окно")
+        closeControl.setAccessibilityLabel(tr("Close window", "Закрыть окно"))
+        closeControl.setAccessibilityRole(.button)
+        closeControl.isHidden = !reference.canClose
+        closeControl.target = self
+        closeControl.action = #selector(requestWindowClose)
+        addSubview(closeControl)
+        selectControl.toolTip = reference.title
+        selectControl.setAccessibilityLabel(reference.title + (reference.isMinimized ? tr(", minimized", ", свёрнуто") : "") + (reference.isFocused ? tr(", active", ", активно") : ""))
     }
     required init?(coder: NSCoder) { fatalError() }
     @objc private func pick() { choose?(windowReference) }
+    @objc private func requestWindowClose() { closeWindow?(windowReference) }
     func update(_ reference: WindowReference) {
         if reference.captureState != windowReference.captureState { clearImage() }
         windowReference = reference
         titleField.stringValue = reference.title
-        toolTip = reference.title
-        setAccessibilityLabel(reference.title + (reference.isMinimized ? tr(", minimized", ", свёрнуто") : "") +
-                              (reference.isFocused ? tr(", active", ", активно") : ""))
+        selectControl.toolTip = reference.title
+        selectControl.setAccessibilityLabel(reference.title + (reference.isMinimized ? tr(", minimized", ", свёрнуто") : "") +
+                                           (reference.isFocused ? tr(", active", ", активно") : ""))
         layer?.backgroundColor = (reference.isFocused ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.22) : NSColor.controlBackgroundColor).cgColor
         stateField.stringValue = reference.isMinimized ? tr("Minimized", "Свёрнуто") : (reference.isFocused ? tr("Active", "Активно") : "")
+        closeControl.isHidden = !reference.canClose
     }
     func clearImage() {
         picture.image = NSImage(systemSymbolName: "macwindow", accessibilityDescription: nil)
@@ -431,6 +467,7 @@ private final class WindowPreviewView: NSView {
     private let strip = NSView()
     private(set) var cards: [WindowPreviewCard] = []
     var onSelect: ((WindowReference) -> Void)?
+    var onCloseWindow: ((WindowReference) -> Void)?
     var onRefresh: (() -> Void)?
     var onPermission: (() -> Void)?
     var onEnter: (() -> Void)?
@@ -472,6 +509,7 @@ private final class WindowPreviewView: NSView {
             let card = WindowPreviewCard(window)
             card.frame.origin = NSPoint(x: CGFloat(index) * 240 + 4, y: 4)
             card.choose = { [weak self] value in self?.onSelect?(value) }
+            card.closeWindow = { [weak self] value in self?.onCloseWindow?(value) }
             strip.addSubview(card); cards.append(card)
         }
         info.frame = NSRect(x: 10, y: 7, width: bounds.width - 18, height: 24)
@@ -514,6 +552,7 @@ private final class WindowPreviewView: NSView {
         for window in windows where !cards.contains(where: { $0.windowReference.id == window.id }) {
             let card = WindowPreviewCard(window)
             card.choose = { [weak self] value in self?.onSelect?(value) }
+            card.closeWindow = { [weak self] value in self?.onCloseWindow?(value) }
             strip.addSubview(card); cards.append(card)
         }
         for (index, card) in cards.enumerated() { card.frame.origin = NSPoint(x: CGFloat(index) * 240 + 4, y: 4) }
@@ -524,10 +563,10 @@ private final class WindowPreviewView: NSView {
     }
     func focus(direction: Int, in panel: NSWindow) {
         guard !cards.isEmpty else { return }
-        let index = cards.firstIndex(where: { $0 === panel.firstResponder }) ?? (direction > 0 ? -1 : cards.count)
+        let index = cards.firstIndex(where: { $0.focusTarget === panel.firstResponder }) ?? (direction > 0 ? -1 : cards.count)
         let next = max(0, min(cards.count - 1, index + direction))
         let card = cards[next]
-        panel.makeFirstResponder(card)
+        panel.makeFirstResponder(card.focusTarget)
         card.scrollToVisible(card.bounds)
     }
     func clearImages() { for card in cards { card.clearImage() } }
