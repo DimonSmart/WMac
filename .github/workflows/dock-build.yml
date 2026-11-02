@@ -12,6 +12,7 @@ on:
       - 'scripts/**'
       - 'Tests/**'
       - '.github/workflows/dock-build.yml'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 jobs:

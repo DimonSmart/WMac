@@ -1,0 +1,148 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish WMac
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag and project versions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="$GITHUB_REF_NAME"
+          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "Release tags must use vMAJOR.MINOR.PATCH format; got '$tag'." >&2
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+
+          project_versions="$(sed -n 's/.*MARKETING_VERSION = "\([^"]*\)".*/\1/p' WMac.xcodeproj/project.pbxproj | sort -u)"
+          if [[ "$project_versions" != "$version" ]]; then
+            echo "Tag version '$version' does not match the WMac MARKETING_VERSION '$project_versions'." >&2
+            exit 1
+          fi
+
+          build="$(sed -n 's/.*CURRENT_PROJECT_VERSION = "\([^"]*\)".*/\1/p' WMac.xcodeproj/project.pbxproj | sort -u)"
+          if [[ ! "$build" =~ ^[1-9][0-9]*$ ]]; then
+            echo "WMac CURRENT_PROJECT_VERSION must resolve to one positive integer; got '$build'." >&2
+            exit 1
+          fi
+
+          {
+            echo "VERSION=$version"
+            echo "BUILD=$build"
+          } >> "$GITHUB_ENV"
+
+      - name: Build app and test fixtures; run model tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          xcodebuild -project WMac.xcodeproj -target WMac -configuration Debug \
+            SYMROOT="$RUNNER_TEMP/WMacProducts" OBJROOT="$RUNNER_TEMP/WMacObjects" \
+            CODE_SIGNING_ALLOWED=NO build
+          xcodebuild -project WMac.xcodeproj -target WMacMultiFixture -configuration Debug \
+            SYMROOT="$RUNNER_TEMP/WMacProducts" OBJROOT="$RUNNER_TEMP/WMacFixtureObjects" \
+            CODE_SIGNING_ALLOWED=NO build
+
+          mkdir -p "$RUNNER_TEMP/WMacTests"
+          xcrun swiftc -swift-version 6 -o "$RUNNER_TEMP/WMacTests/ModelTests" Sources/Core/*.swift Tests/*.swift
+          "$RUNNER_TEMP/WMacTests/ModelTests"
+
+      - name: Build and verify release DMG
+        shell: bash
+        run: ./scripts/release.sh "$VERSION" "$BUILD"
+
+      - name: Verify checksum and prepare release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_dir="$(find "$PWD/.build/distribution" -mindepth 1 -maxdepth 1 -type d -name "release-$VERSION-$BUILD.*" -print -quit)"
+          if [[ -z "$release_dir" ]]; then
+            echo "Release preparation directory for $VERSION ($BUILD) was not found." >&2
+            exit 1
+          fi
+
+          dmg_name="WMac-$VERSION-$BUILD.dmg"
+          dmg_path="$release_dir/$dmg_name"
+          checksum_path="$release_dir/SHA256.txt"
+          [[ -s "$dmg_path" && -s "$checksum_path" ]] || {
+            echo "Release DMG or SHA256.txt is missing." >&2
+            exit 1
+          }
+          (cd "$release_dir" && shasum -a 256 -c SHA256.txt)
+
+          previous_tag="$(git tag --merged "$GITHUB_REF_NAME" --sort=-version:refname | awk -v current="$GITHUB_REF_NAME" '$0 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/ && $0 != current && !found { print; found = 1 }')"
+          if [[ -n "$previous_tag" ]]; then
+            changes_heading="Changes since $previous_tag"
+            changes="$(git log --no-merges --format='- %s (%h)' "$previous_tag..$GITHUB_REF_NAME")"
+          else
+            changes_heading="Changes"
+            changes="$(git log --no-merges --format='- %s (%h)' "$GITHUB_REF_NAME")"
+          fi
+          [[ -n "$changes" ]] || changes="- No commit summary available."
+
+          release_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          notes_path="$RUNNER_TEMP/release-notes.md"
+          {
+            printf '## WMac %s\n\n' "$GITHUB_REF_NAME"
+            printf '### Download\n\n'
+            printf -- '- Universal macOS 14+ (arm64 + x86_64): [%s](%s/%s)\n' "$dmg_name" "$release_url" "$dmg_name"
+            printf -- '- SHA-256: [SHA256.txt](%s/SHA256.txt)\n\n' "$release_url"
+            printf '### %s\n\n%s\n\n' "$changes_heading" "$changes"
+            printf '### Notes\n\n'
+            printf '%s\n' '- The app is ad-hoc signed and is not notarized. macOS may require its normal first-launch approval.'
+            printf '%s\n' '- WMac does not change Gatekeeper, quarantine, or system trust.'
+          } > "$notes_path"
+
+          {
+            echo "RELEASE_DMG=$dmg_path"
+            echo "RELEASE_CHECKSUM=$checksum_path"
+            echo "RELEASE_NOTES=$notes_path"
+          } >> "$GITHUB_ENV"
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" \
+              --title "WMac $tag" --notes-file "$RELEASE_NOTES"
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "WMac $tag" --notes-file "$RELEASE_NOTES"
+          fi
+
+          gh release upload "$tag" "$RELEASE_DMG" "$RELEASE_CHECKSUM" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+          existing_assets="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          while IFS= read -r asset; do
+            if [[ "$asset" == WMac-*.dmg && "$asset" != "$(basename "$RELEASE_DMG")" ]]; then
+              gh release delete-asset "$tag" "$asset" --repo "$GITHUB_REPOSITORY" --yes
+            fi
+          done <<< "$existing_assets"
