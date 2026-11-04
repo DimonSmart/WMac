@@ -132,4 +132,31 @@ import AppKit
     if let moved = state.layoutMovingButton(.instance(unknown.id), toVisibleIndex: 0) { state.setLayout(moved) }
     check(state.snapshot.buttons.first?.instance?.id == unknown.id, "unidentifiable processes remain draggable")
     check(!state.savedLayout.description.contains("310"), "unidentifiable process placement remains in memory only")
+
+    // Exercise the serialized mutation path, not just the pure coordinator.
+    let editedState = TaskbarCoordinator()
+    let edits = PinMutations(coordinator: editedState, store: store)
+    edits.load()
+    await edits.wait()
+    editedState.apply([ia, ibAgain, ic], active: nil)
+    guard let icon = editedState.snapshot.buttons.first(where: { $0.instance?.id == ic.id }) else {
+        check(false, "running process is available for persistent move"); return
+    }
+    edits.submit(.reorder(ButtonCapture(icon), 0))
+    await edits.wait()
+    check(editedState.snapshot.buttons.first?.instance?.id == ic.id && edits.failure == nil,
+          "serialized runtime drag commits a visible reorder")
+    check(try await store.load().layout == editedState.savedLayout,
+          "runtime drag commits the same order to persistent storage")
+
+    // v2 persisted only pinned apps, so migration must preserve their order and IDs.
+    struct LegacyV2: Codable { let version: Int; let pins: [Pin] }
+    let oldPin = Pin(application: a, name: "Ordering A")
+    let v2URL = dir.appendingPathComponent("pins-v2.json")
+    try JSONEncoder().encode(LegacyV2(version: 2, pins: [oldPin])).write(to: v2URL)
+    let v2Store = PinStore(url: v2URL, io: io)
+    let migrated = try await v2Store.load()
+    check(migrated.migrated && migrated.pins.first?.pin.id == oldPin.id && migrated.layout == [.pin(oldPin.id)],
+          "v2 pins migrate to durable pin slots with preserved identity")
+    check(try await !v2Store.load().migrated, "v2 migration is idempotent")
 }
