@@ -105,10 +105,18 @@ enum TaskbarPlacement: Hashable, Sendable {
     func setExclusions(_ values: Set<AppDefinition>) { excluded = values; apply(allInstances, active: rawActive) }
 
     /// Used to persist the exact intended layout before publishing a pin addition.
-    func layoutAddingPin(_ id: UUID, replacing button: TaskbarButtonID? = nil) -> [TaskbarPlacement] {
+    func layoutAddingPin(_ id: UUID, replacing button: TaskbarButtonID? = nil,
+                         application: AppDefinition? = nil) -> [TaskbarPlacement] {
         var next = placements
         let newPlacement = TaskbarPlacement.saved(.pin(id))
-        if let button, let old = buttonPlacements[button], let index = next.firstIndex(of: old) {
+        let existing = button.flatMap { buttonPlacements[$0] }
+        let matching = application.flatMap { app in
+            next.first { placement in
+                if case .saved(.application(let definition, _)) = placement { return definition == app }
+                return false
+            }
+        }
+        if let old = existing ?? matching, let index = next.firstIndex(of: old) {
             next[index] = newPlacement
         } else {
             next.append(newPlacement)
@@ -118,11 +126,14 @@ enum TaskbarPlacement: Hashable, Sendable {
 
     @discardableResult func add(_ pin: ResolvedPin, replacing button: TaskbarButtonID? = nil) -> Bool {
         guard !pins.contains(where: { $0.pin.application == pin.pin.application || $0.pin.id == pin.pin.id }) else { return false }
-        let next = layoutAddingPin(pin.pin.id, replacing: button)
+        let next = layoutAddingPin(pin.pin.id, replacing: button, application: pin.pin.application)
         pins.append(pin)
         placements = next
         // A formerly temporary process can now be represented by the new pin.
-        if let button, case .instance(let instance) = button { processPlacements[instance] = nil }
+        if let button, case .instance(let instance) = button {
+            assignments[pin.pin.id] = instance
+            processPlacements[instance] = nil
+        }
         sortPinsByLayout()
         compose(preferActivePin: pin.pin.id)
         return true
