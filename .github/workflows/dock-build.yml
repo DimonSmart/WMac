@@ -2,7 +2,7 @@ name: Validate WMac
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/unified-taskbar-ordering]
     paths:
       - 'Sources/Core/**'
       - 'Sources/Watchdog/**'
