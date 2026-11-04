@@ -177,7 +177,7 @@ actor PinStore {
                 case .add(let definition, let name):
                     guard !owner.coordinator.pins.contains(where: { $0.pin.application == definition }) else { return }
                     let pin = await owner.store.prepare(application: definition, name: name)
-                    let layout = owner.coordinator.layoutAddingPin(pin.pin.id).compactMap(\.persistent)
+                    let layout = owner.coordinator.layoutAddingPin(pin.pin.id, application: definition).compactMap(\.persistent)
                     try await owner.store.save(owner.coordinator.pins.map(\.pin) + [pin.pin], layout: layout)
                     owner.lastSavedLayout = layout; owner.coordinator.add(pin)
                 case .pin(let capture):
@@ -186,7 +186,7 @@ actor PinStore {
                     let name = owner.coordinator.snapshot.buttons.first { $0.id == capture.button }?.name ?? definition.url.deletingPathExtension().lastPathComponent
                     let pin = await owner.store.prepare(application: definition, name: name)
                     guard owner.valid(capture) else { return }
-                    let layout = owner.coordinator.layoutAddingPin(pin.pin.id, replacing: capture.button).compactMap(\.persistent)
+                    let layout = owner.coordinator.layoutAddingPin(pin.pin.id, replacing: capture.button, application: definition).compactMap(\.persistent)
                     try await owner.store.save(owner.coordinator.pins.map(\.pin) + [pin.pin], layout: layout)
                     owner.lastSavedLayout = layout; owner.coordinator.add(pin, replacing: capture.button)
                 case .drop(let urls):
@@ -248,7 +248,11 @@ actor PinStore {
                 }
                 owner.failure = nil; owner.failedEdit = nil
             } catch { owner.failure = error.localizedDescription; owner.failedEdit = edit }
-            owner.changed?()
+            if case .synchronizeLayout = edit {
+                if owner.failure != nil { owner.changed?() }
+            } else {
+                owner.changed?()
+            }
         }
     }
     func synchronizeLayout() { if loaded { submit(.synchronizeLayout) } }
