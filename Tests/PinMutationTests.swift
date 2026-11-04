@@ -61,6 +61,7 @@ import AppKit
     try await store.save([])
     recovery.retry(); recovery.submit(.add(a, "A")); await recovery.wait()
     check(recovery.loaded && recovery.failure == nil && invalidState.pins.count == 1, "retry after explicit external file recovery resumes serialized mutations")
+    try await testUnifiedTaskbarOrdering(check)
 }
 
 @MainActor func testUnifiedTaskbarOrdering(_ check: (Bool, String) -> Void) async throws {
