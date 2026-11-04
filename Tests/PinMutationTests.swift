@@ -62,3 +62,73 @@ import AppKit
     recovery.retry(); recovery.submit(.add(a, "A")); await recovery.wait()
     check(recovery.loaded && recovery.failure == nil && invalidState.pins.count == 1, "retry after explicit external file recovery resumes serialized mutations")
 }
+
+@MainActor func testUnifiedTaskbarOrdering(_ check: (Bool, String) -> Void) async throws {
+    let a = AppDefinition(url: URL(fileURLWithPath: "/Applications/OrderingA.app"), bundleID: "test.order.a")
+    let b = AppDefinition(url: URL(fileURLWithPath: "/Applications/OrderingB.app"), bundleID: "test.order.b")
+    let c = AppDefinition(url: URL(fileURLWithPath: "/Applications/OrderingC.app"), bundleID: "test.order.c")
+    func instance(_ id: Int32, _ time: Double, _ app: AppDefinition) -> Instance {
+        Instance(id: InstanceID(pid: id, startDate: Date(timeIntervalSince1970: time)),
+                 name: app.bundleID, url: app.url, bundleID: app.bundleID)
+    }
+    let ia = instance(110, 1, a), ib = instance(120, 2, b), ic = instance(130, 3, c)
+    let state = TaskbarCoordinator()
+    state.apply([ia, ib, ic], active: ia.id)
+    check(state.snapshot.buttons.map(\.application) == [a, b, c], "unseen applications appear in discovery order")
+    if let moved = state.layoutMovingButton(.instance(ib.id), toVisibleIndex: 0) {
+        state.setLayout(moved)
+    } else { check(false, "running application is draggable") }
+    check(state.snapshot.buttons.map(\.application) == [b, a, c], "running applications can move between other running buttons")
+    let saved = state.savedLayout
+    let restarted = TaskbarCoordinator()
+    restarted.apply([instance(211, 11, a), instance(221, 12, b), instance(231, 13, c)], active: nil)
+    restarted.restore([], layout: saved)
+    check(restarted.snapshot.buttons.map(\.application) == [b, a, c], "restart uses saved app positions, not PIDs")
+    state.apply([ia, ic], active: nil)
+    check(state.snapshot.buttons.map(\.application) == [a, c], "closed application leaves no blank button")
+    let ibAgain = instance(220, 20, b)
+    state.apply([ia, ic, ibAgain], active: nil)
+    check(state.snapshot.buttons.map(\.application) == [b, a, c], "reopened app reuses its old layout slot")
+
+    let pin = ResolvedPin(pin: Pin(application: b, name: "Ordering B"), availability: .available, recoveryNote: nil)
+    let pinPreview = state.layoutAddingPin(pin.pin.id, replacing: .instance(ibAgain.id))
+    check(pinPreview.compactMap(\.persistent).first == .pin(pin.pin.id), "pin conversion preserves on-screen location")
+    check(state.add(pin, replacing: .instance(ibAgain.id)), "existing running app can be pinned")
+    check(state.snapshot.buttons.first?.id == .pin(pin.pin.id), "pinning an app does not move its icon")
+    let extraB = instance(230, 30, b)
+    state.apply([ia, ic, ibAgain, extraB], active: nil)
+    check(state.snapshot.buttons.filter { $0.application == b }.count == 2, "pin and extra application instance are separate buttons")
+    check(Set(state.snapshot.buttons.compactMap { $0.instance?.id }).count == 4, "every live process is represented exactly once")
+    state.remove(pin.pin.id)
+    check(state.snapshot.buttons.first?.application == b && state.snapshot.buttons.first?.instance?.id == ibAgain.id,
+          "unpinning an active app keeps its position and process")
+    check(state.savedLayout.allSatisfy { if case .pin = $0 { return false }; return true },
+          "removing the last pin does not leave orphan pin entries")
+
+    let extraA = instance(140, 4, a)
+    state.apply([ia, ic, ibAgain, extraB, extraA], active: nil)
+    if let moved = state.layoutMovingButton(.instance(extraA.id), toVisibleIndex: 0) { state.setLayout(moved) }
+    check(state.snapshot.buttons.first?.instance?.id == extraA.id, "individual same-app instances may be moved")
+    check(state.savedLayout.filter { if case .application(let app, _) = $0 { return app == a }; return false }.count == 2,
+          "each instance has a reusable stable app slot")
+
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("WMacUnifiedOrdering-\(UUID())")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    var io = PinStorageIO()
+    io.bundleID = { _ in nil }
+    let store = PinStore(url: dir.appendingPathComponent("pins.json"), io: io)
+    try await store.save([], layout: state.savedLayout)
+    let onDisk = try await store.load()
+    check(onDisk.layout == state.savedLayout, "unified layout survives atomic storage round-trip")
+    let encoded = try Data(contentsOf: dir.appendingPathComponent("pins.json"))
+    let json = String(decoding: encoded, as: UTF8.self)
+    check(!json.contains("\"pid\"") && !json.contains("startDate"), "no process lifetime identifiers are persisted")
+
+    let unknown = Instance(id: InstanceID(pid: 310, startDate: Date(timeIntervalSince1970: 4)),
+                           name: "Unnamed", url: nil, bundleID: "")
+    state.apply([unknown, ia, ibAgain], active: nil)
+    if let moved = state.layoutMovingButton(.instance(unknown.id), toVisibleIndex: 0) { state.setLayout(moved) }
+    check(state.snapshot.buttons.first?.instance?.id == unknown.id, "unidentifiable processes remain draggable")
+    check(!state.savedLayout.description.contains("310"), "unidentifiable process placement remains in memory only")
+}
