@@ -124,9 +124,8 @@ _ = distinctPins.add(resolved(a)); _ = distinctPins.add(resolved(b))
 distinctPins.apply([one, elsewhere], active: nil)
 check(represented(distinctPins) == [one.id, elsewhere.id] && distinctPins.snapshot.buttons.count == 2, "pins at different paths never merge despite equal bundle identifiers")
 let duplicatePin = resolved(a).pin
-try await store.save([duplicatePin, duplicatePin])
-do { _ = try await store.load(); check(false, "duplicate persistent pin must be rejected") }
-catch { check(true, "duplicate persistent identities are rejected safely") }
+do { try await store.save([duplicatePin, duplicatePin]); check(false, "duplicate persistent pin must be rejected") }
+catch { check(true, "duplicate persistent identities are rejected before writing") }
 var mismatchIO = recoveryIO
 mismatchIO.bundleID = { url in url == a.url ? "test.app" : "different.app" }
 try await store.save([bookmarked])
