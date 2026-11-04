@@ -29,18 +29,19 @@ enum PinStoreError: LocalizedError {
         }
     }
 }
-struct PinLoad: Sendable { let pins: [ResolvedPin]; let migrated: Bool }
+struct PinLoad: Sendable { let pins: [ResolvedPin]; let layout: [TaskbarLayoutSlot]; let migrated: Bool }
 
 /// Synchronous filesystem calls execute exclusively on this actor, never the UI actor.
 actor PinStore {
-    static let currentVersion = 2
+    static let currentVersion = 3
     static var defaultURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/WMac/pins.json")
     }
     private let url: URL
     private let io: PinStorageIO
     private struct Header: Codable { let version: Int }
-    private struct Document: Codable { let version: Int; let pins: [Pin] }
+    private struct Document: Codable { let version: Int; let pins: [Pin]; let layout: [TaskbarLayoutSlot] }
+    private struct V2: Codable { let version: Int; let pins: [Pin] }
     // Version 1 used a path string and had no stable pin UUID or bookmark.
     private struct Legacy: Codable {
         struct Entry: Codable { let path: String; let bundleID: String; let name: String }
@@ -59,16 +60,23 @@ actor PinStore {
         recover(Pin(id: id, application: application, name: name, bookmark: try? io.bookmark(application.url)))
     }
     func load() throws -> PinLoad {
-        guard io.exists(url) else { return PinLoad(pins: [], migrated: false) }
+        guard io.exists(url) else { return PinLoad(pins: [], layout: [], migrated: false) }
         let data = try io.read(url)
         let version = try JSONDecoder().decode(Header.self, from: data).version
         let pins: [Pin]
+        let layout: [TaskbarLayoutSlot]
         switch version {
-        case Self.currentVersion: pins = try JSONDecoder().decode(Document.self, from: data).pins
+        case Self.currentVersion:
+            let document = try JSONDecoder().decode(Document.self, from: data)
+            pins = document.pins; layout = document.layout
+        case 2:
+            pins = try JSONDecoder().decode(V2.self, from: data).pins
+            layout = pins.map { .pin($0.id) }
         case 1:
             pins = try JSONDecoder().decode(Legacy.self, from: data).pins.map {
                 Pin(application: AppDefinition(url: URL(fileURLWithPath: $0.path), bundleID: $0.bundleID), name: $0.name)
             }
+            layout = pins.map { .pin($0.id) }
         default: throw PinStoreError.unsupportedVersion(version)
         }
         var ids = Set<UUID>(); var definitions = Set<AppDefinition>()
@@ -78,13 +86,36 @@ actor PinStore {
             guard ids.insert(value.pin.id).inserted, definitions.insert(value.pin.application).inserted else { throw PinStoreError.invalidState }
             return value
         }
+        try validate(layout: layout, pins: pins)
         // Migration and refreshed bookmarks are committed atomically; failure preserves the previous file.
-        if version != Self.currentVersion || recovered.map(\.pin) != pins { try save(recovered.map(\.pin)) }
-        return PinLoad(pins: recovered, migrated: version != Self.currentVersion)
+        if version != Self.currentVersion || recovered.map(\.pin) != pins {
+            try save(recovered.map(\.pin), layout: layout)
+        }
+        return PinLoad(pins: recovered, layout: layout, migrated: version != Self.currentVersion)
     }
     func save(_ pins: [Pin]) throws {
-        let data = try JSONEncoder().encode(Document(version: Self.currentVersion, pins: pins))
+        try save(pins, layout: pins.map { .pin($0.id) })
+    }
+    func save(_ pins: [Pin], layout: [TaskbarLayoutSlot]) throws {
+        try validate(layout: layout, pins: pins)
+        let data = try JSONEncoder().encode(Document(version: Self.currentVersion, pins: pins, layout: layout))
         try io.write(data, url)
+    }
+    private func validate(layout: [TaskbarLayoutSlot], pins: [Pin]) throws {
+        let ids = pins.map(\.id)
+        guard Set(ids).count == ids.count, Set(pins.map(\.application)).count == pins.count,
+              Set(layout).count == layout.count else { throw PinStoreError.invalidState }
+        var layoutPins: [UUID] = []
+        var applicationIDs = Set<UUID>()
+        for slot in layout {
+            switch slot {
+            case .pin(let id): layoutPins.append(id)
+            case .application(let app, let id):
+                guard app.url.isFileURL, !app.bundleID.isEmpty, applicationIDs.insert(id).inserted
+                else { throw PinStoreError.invalidState }
+            }
+        }
+        guard Set(layoutPins) == Set(ids), layoutPins.count == ids.count else { throw PinStoreError.invalidState }
     }
     private func recover(_ original: Pin) -> ResolvedPin {
         let definition = AppDefinition(url: original.application.url, bundleID: original.application.bundleID)
