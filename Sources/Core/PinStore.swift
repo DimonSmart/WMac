@@ -145,7 +145,7 @@ actor PinStore {
 /// All asynchronous loads and edits form one FIFO. Nothing publishes until its atomic save succeeds.
 @MainActor final class PinMutations {
     enum Edit: Sendable {
-        case add(AppDefinition, String), pin(ButtonCapture), drop([URL]), remove(ButtonCapture), move(UUID, Int), relink(ButtonCapture, URL)
+        case add(AppDefinition, String), pin(ButtonCapture), drop([URL]), remove(ButtonCapture), move(UUID, Int), reorder(ButtonCapture, Int), relink(ButtonCapture, URL), synchronizeLayout
     }
     let coordinator: TaskbarCoordinator
     let store: PinStore
@@ -153,6 +153,7 @@ actor PinStore {
     private(set) var loaded = false
     private(set) var failure: String?
     private var failedEdit: Edit?
+    private var lastSavedLayout: [TaskbarLayoutSlot] = []
     var changed: (() -> Void)?
     var validate: ((ButtonCapture) -> Bool)?
     init(coordinator: TaskbarCoordinator, store: PinStore) { self.coordinator = coordinator; self.store = store }
@@ -160,7 +161,10 @@ actor PinStore {
         enqueue { owner in
             do {
                 let result = try await owner.store.load()
-                owner.coordinator.restore(result.pins); owner.loaded = true; owner.failure = nil
+                owner.lastSavedLayout = result.layout
+                owner.coordinator.restore(result.pins, layout: result.layout)
+                owner.loaded = true; owner.failure = nil
+                if owner.coordinator.savedLayout != result.layout { owner.submit(.synchronizeLayout) }
             } catch { owner.loaded = false; owner.failure = error.localizedDescription }
             owner.changed?()
         }
@@ -173,16 +177,18 @@ actor PinStore {
                 case .add(let definition, let name):
                     guard !owner.coordinator.pins.contains(where: { $0.pin.application == definition }) else { return }
                     let pin = await owner.store.prepare(application: definition, name: name)
-                    try await owner.store.save(owner.coordinator.pins.map(\.pin) + [pin.pin])
-                    owner.coordinator.add(pin)
+                    let layout = owner.coordinator.layoutAddingPin(pin.pin.id).compactMap(\.persistent)
+                    try await owner.store.save(owner.coordinator.pins.map(\.pin) + [pin.pin], layout: layout)
+                    owner.lastSavedLayout = layout; owner.coordinator.add(pin)
                 case .pin(let capture):
                     guard owner.valid(capture), let definition = capture.application,
                           !owner.coordinator.pins.contains(where: { $0.pin.application == definition }) else { return }
                     let name = owner.coordinator.snapshot.buttons.first { $0.id == capture.button }?.name ?? definition.url.deletingPathExtension().lastPathComponent
                     let pin = await owner.store.prepare(application: definition, name: name)
                     guard owner.valid(capture) else { return }
-                    try await owner.store.save(owner.coordinator.pins.map(\.pin) + [pin.pin])
-                    owner.coordinator.add(pin)
+                    let layout = owner.coordinator.layoutAddingPin(pin.pin.id, replacing: capture.button).compactMap(\.persistent)
+                    try await owner.store.save(owner.coordinator.pins.map(\.pin) + [pin.pin], layout: layout)
+                    owner.lastSavedLayout = layout; owner.coordinator.add(pin, replacing: capture.button)
                 case .drop(let urls):
                     var additions: [ResolvedPin] = []
                     for url in urls {
@@ -191,33 +197,61 @@ actor PinStore {
                            !additions.contains(where: { $0.pin.application == pin.pin.application }) { additions.append(pin) }
                     }
                     guard !additions.isEmpty else { return }
-                    try await owner.store.save(owner.coordinator.pins.map(\.pin) + additions.map(\.pin))
+                    let layout = owner.coordinator.savedLayout + additions.map { TaskbarLayoutSlot.pin($0.pin.id) }
+                    try await owner.store.save(owner.coordinator.pins.map(\.pin) + additions.map(\.pin), layout: layout)
+                    owner.lastSavedLayout = layout
                     for pin in additions { owner.coordinator.add(pin) }
                 case .remove(let capture):
                     guard owner.valid(capture), case .pin(let id) = capture.button else { return }
-                    try await owner.store.save(owner.coordinator.pins.filter { $0.pin.id != id }.map(\.pin))
-                    owner.coordinator.remove(id)
+                    let layout = owner.coordinator.layoutRemovingPin(id).compactMap(\.persistent)
+                    try await owner.store.save(owner.coordinator.pins.filter { $0.pin.id != id }.map(\.pin), layout: layout)
+                    owner.lastSavedLayout = layout; owner.coordinator.remove(id)
                 case .move(let id, let index):
                     guard let old = owner.coordinator.pins.firstIndex(where: { $0.pin.id == id }) else { return }
-                    var order = owner.coordinator.pins.map(\.pin)
-                    let pin = order.remove(at: old); order.insert(pin, at: min(max(0, index), order.count))
-                    try await owner.store.save(order); owner.coordinator.move(id, to: index)
+                    var pins = owner.coordinator.pins.map(\.pin)
+                    let pin = pins.remove(at: old); pins.insert(pin, at: min(max(0, index), pins.count))
+                    let layout = owner.coordinator.layoutMovingPin(id, to: index).compactMap(\.persistent)
+                    try await owner.store.save(pins, layout: layout)
+                    owner.lastSavedLayout = layout; owner.coordinator.move(id, to: index)
+                case .reorder(let capture, let destination):
+                    guard owner.valid(capture),
+                          let proposal = owner.coordinator.layoutMovingButton(capture.button, toVisibleIndex: destination) else { return }
+                    let layout = proposal.compactMap(\.persistent)
+                    let ids: [UUID] = layout.compactMap { slot in
+                        if case .pin(let id) = slot { return id }
+                        return nil
+                    }
+                    let pins = ids.compactMap { id in owner.coordinator.pins.first { $0.pin.id == id }?.pin }
+                    guard pins.count == owner.coordinator.pins.count else { throw PinStoreError.invalidState }
+                    if layout != owner.lastSavedLayout || pins != owner.coordinator.pins.map(\.pin) {
+                        try await owner.store.save(pins, layout: layout)
+                        owner.lastSavedLayout = layout
+                    }
+                    owner.coordinator.setLayout(proposal)
+                case .synchronizeLayout:
+                    let layout = owner.coordinator.savedLayout
+                    if layout != owner.lastSavedLayout {
+                        try await owner.store.save(owner.coordinator.pins.map(\.pin), layout: layout)
+                        owner.lastSavedLayout = layout
+                    }
                 case .relink(let capture, let url):
                     guard owner.valid(capture), case .pin(let id) = capture.button,
                           let index = owner.coordinator.pins.firstIndex(where: { $0.pin.id == id }) else { return }
                     guard let replacement = await owner.store.prepare(url: url),
                           !owner.coordinator.pins.contains(where: { $0.pin.id != id && $0.pin.application == replacement.pin.application }) else { throw PinStoreError.invalidState }
-                    // Picker and preparation can suspend; preserve the original captured instance.
                     guard owner.valid(capture) else { return }
-                    var order = owner.coordinator.pins.map(\.pin)
-                    order[index] = Pin(id: id, application: replacement.pin.application, name: replacement.pin.name, bookmark: replacement.pin.bookmark)
-                    try await owner.store.save(order); owner.coordinator.relink(id, to: replacement)
+                    var pins = owner.coordinator.pins.map(\.pin)
+                    pins[index] = Pin(id: id, application: replacement.pin.application, name: replacement.pin.name, bookmark: replacement.pin.bookmark)
+                    try await owner.store.save(pins, layout: owner.coordinator.savedLayout)
+                    owner.lastSavedLayout = owner.coordinator.savedLayout
+                    owner.coordinator.relink(id, to: replacement)
                 }
                 owner.failure = nil; owner.failedEdit = nil
             } catch { owner.failure = error.localizedDescription; owner.failedEdit = edit }
             owner.changed?()
         }
     }
+    func synchronizeLayout() { if loaded { submit(.synchronizeLayout) } }
     func retry() { if !loaded { load() } else if let failedEdit { submit(failedEdit) } }
     func wait() async { await tail?.value }
     private func valid(_ capture: ButtonCapture) -> Bool { capture.matches(coordinator.snapshot) && (validate?(capture) ?? true) }
