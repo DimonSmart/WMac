@@ -178,7 +178,7 @@ actor PinStore {
                     guard !owner.coordinator.pins.contains(where: { $0.pin.application == definition }) else { return }
                     let pin = await owner.store.prepare(application: definition, name: name)
                     let layout = owner.coordinator.layoutAddingPin(pin.pin.id, application: definition).compactMap(\.persistent)
-                    try await owner.store.save(owner.coordinator.pins.map(\.pin) + [pin.pin], layout: layout)
+                    try await owner.store.save(owner.orderedPins(owner.coordinator.pins.map(\.pin) + [pin.pin], layout: layout), layout: layout)
                     owner.lastSavedLayout = layout; owner.coordinator.add(pin)
                 case .pin(let capture):
                     guard owner.valid(capture), let definition = capture.application,
@@ -187,7 +187,7 @@ actor PinStore {
                     let pin = await owner.store.prepare(application: definition, name: name)
                     guard owner.valid(capture) else { return }
                     let layout = owner.coordinator.layoutAddingPin(pin.pin.id, replacing: capture.button, application: definition).compactMap(\.persistent)
-                    try await owner.store.save(owner.coordinator.pins.map(\.pin) + [pin.pin], layout: layout)
+                    try await owner.store.save(owner.orderedPins(owner.coordinator.pins.map(\.pin) + [pin.pin], layout: layout), layout: layout)
                     owner.lastSavedLayout = layout; owner.coordinator.add(pin, replacing: capture.button)
                 case .drop(let urls):
                     var additions: [ResolvedPin] = []
@@ -197,8 +197,20 @@ actor PinStore {
                            !additions.contains(where: { $0.pin.application == pin.pin.application }) { additions.append(pin) }
                     }
                     guard !additions.isEmpty else { return }
-                    let layout = owner.coordinator.savedLayout + additions.map { TaskbarLayoutSlot.pin($0.pin.id) }
-                    try await owner.store.save(owner.coordinator.pins.map(\.pin) + additions.map(\.pin), layout: layout)
+                    var layout = owner.coordinator.savedLayout
+                    for addition in additions {
+                        let replacement = TaskbarLayoutSlot.pin(addition.pin.id)
+                        if let existing = layout.firstIndex(where: { slot in
+                            if case .application(let app, _) = slot { return app == addition.pin.application }
+                            return false
+                        }) {
+                            layout[existing] = replacement
+                        } else {
+                            layout.append(replacement)
+                        }
+                    }
+                    let pins = owner.orderedPins(owner.coordinator.pins.map(\.pin) + additions.map(\.pin), layout: layout)
+                    try await owner.store.save(pins, layout: layout)
                     owner.lastSavedLayout = layout
                     for pin in additions { owner.coordinator.add(pin) }
                 case .remove(let capture):
@@ -254,6 +266,13 @@ actor PinStore {
                 owner.changed?()
             }
         }
+    }
+    private func orderedPins(_ pins: [Pin], layout: [TaskbarLayoutSlot]) -> [Pin] {
+        var ranks: [UUID: Int] = [:]
+        for (index, slot) in layout.enumerated() {
+            if case .pin(let id) = slot { ranks[id] = index }
+        }
+        return pins.sorted { (ranks[$0.id] ?? Int.max) < (ranks[$1.id] ?? Int.max) }
     }
     func synchronizeLayout() { if loaded { submit(.synchronizeLayout) } }
     func retry() { if !loaded { load() } else if let failedEdit { submit(failedEdit) } }
