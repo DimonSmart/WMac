@@ -146,7 +146,8 @@ import AppKit
     await edits.wait()
     check(editedState.snapshot.buttons.first?.instance?.id == ic.id && edits.failure == nil,
           "serialized runtime drag commits a visible reorder")
-    check(try await store.load().layout == editedState.savedLayout,
+    let committed = try await store.load()
+    check(committed.layout == editedState.savedLayout,
           "runtime drag commits the same order to persistent storage")
 
     // v2 persisted only pinned apps, so migration must preserve their order and IDs.
@@ -158,5 +159,6 @@ import AppKit
     let migrated = try await v2Store.load()
     check(migrated.migrated && migrated.pins.first?.pin.id == oldPin.id && migrated.layout == [.pin(oldPin.id)],
           "v2 pins migrate to durable pin slots with preserved identity")
-    check(try await !v2Store.load().migrated, "v2 migration is idempotent")
+    let migratedAgain = try await v2Store.load()
+    check(!migratedAgain.migrated, "v2 migration is idempotent")
 }
