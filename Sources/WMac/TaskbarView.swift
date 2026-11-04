@@ -208,7 +208,7 @@ private let buttonDragType = NSPasteboard.PasteboardType("app.wmac.button")
             if next.type == .leftMouseUp { released = true; break }
             if hypot(next.locationInWindow.x - event.locationInWindow.x, next.locationInWindow.y - event.locationInWindow.y) >= 5 { dragEvent = next; break }
         }
-        if let dragEvent {
+        if dragEvent != nil {
             runtime.previews.close()
             guard runtime.valid(captured) else { return }
             draggedButton = captured
