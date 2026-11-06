@@ -580,6 +580,65 @@ final class AccessibilityService: @unchecked Sendable {
             }
         }
     }
+    /// Conditional geometry write for the automatic reservation feature. Unlike
+    /// arrange(), this may restore a previously adjusted, now-unfocused window.
+    /// The current AX identity, process lifetime and expected frame are rechecked
+    /// on the serialized Accessibility queue before any write.
+    func arrangeReservation(_ instance: InstanceID, windowID: UUID, expected: CGRect, target: CGRect) async -> Bool {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                func fail() { continuation.resume(returning: false) }
+                guard self.boundary.trusted(), self.boundary.live(instance),
+                      target.minX.isFinite, target.minY.isFinite, target.width.isFinite,
+                      target.height.isFinite, target.width > 0, target.height > 0,
+                      case .windows = self.refresh(instance),
+                      let record = self.states[instance]?.records.first(where: {
+                          $0.snapshot.id == windowID && !$0.snapshot.isMinimized &&
+                          $0.snapshot.role == kAXWindowRole as String &&
+                          ($0.snapshot.subrole == nil || $0.snapshot.subrole == kAXStandardWindowSubrole as String)
+                      }),
+                      let current = record.snapshot.frame,
+                      abs(current.minX - expected.minX) <= 2,
+                      abs(current.minY - expected.minY) <= 2,
+                      abs(current.width - expected.width) <= 2,
+                      abs(current.height - expected.height) <= 2 else {
+                    fail()
+                    return
+                }
+                AXUIElementSetMessagingTimeout(record.element, 0.5)
+                var canMove = DarwinBoolean(false), canResize = DarwinBoolean(false)
+                guard AXUIElementIsAttributeSettable(record.element, kAXPositionAttribute as CFString, &canMove) == .success,
+                      AXUIElementIsAttributeSettable(record.element, kAXSizeAttribute as CFString, &canResize) == .success,
+                      canMove.boolValue, canResize.boolValue else {
+                    fail()
+                    return
+                }
+                var origin = target.origin, size = target.size
+                guard let position = AXValueCreate(.cgPoint, &origin),
+                      let dimensions = AXValueCreate(.cgSize, &size),
+                      self.boundary.live(instance) else {
+                    fail()
+                    return
+                }
+                let resized = AXUIElementSetAttributeValue(record.element, kAXSizeAttribute as CFString, dimensions)
+                guard resized == .success, self.boundary.live(instance) else {
+                    fail()
+                    return
+                }
+                let moved = AXUIElementSetAttributeValue(record.element, kAXPositionAttribute as CFString, position)
+                guard moved == .success, case .windows = self.refresh(instance),
+                      let actual = self.states[instance]?.records.first(where: { $0.snapshot.id == windowID })?.snapshot.frame,
+                      abs(actual.minX - target.minX) <= 2,
+                      abs(actual.minY - target.minY) <= 2,
+                      abs(actual.width - target.width) <= 2,
+                      abs(actual.height - target.height) <= 2 else {
+                    fail()
+                    return
+                }
+                continuation.resume(returning: true)
+            }
+        }
+    }
     // Optional independent observer for diagnostics. Caller owns its lifetime.
     func observe(_ instance: InstanceID, changed: @escaping @Sendable () -> Void) async -> WindowObservation? {
         await withCheckedContinuation { continuation in

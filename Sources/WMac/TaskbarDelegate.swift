@@ -21,6 +21,7 @@ func tr(_ en: String, _ ru: String) -> String {
     let updates = ApplicationUpdateController()
     let settings = SettingsController()
     let dockVisibility = SystemDockVisibilityService()
+    lazy var windowReservation = WindowReservationService(accessibility: accessibility)
     private var dockAttempted = false
     private var dockManuallyRestored = false
     lazy var settingsWindow = SettingsWindowController(runtime: self)
@@ -62,6 +63,10 @@ func tr(_ en: String, _ ru: String) -> String {
     }
     private func finishLaunching() {
         NSApp.setActivationPolicy(.accessory)
+        windowReservation.start()
+        windowArrangementShortcuts.workAreaForScreen = { [weak self] screen in
+            self?.windowReservation.workArea(for: screen) ?? screen.visibleFrame
+        }
         dockVisibility.recoverAtLaunch()
         dockVisibility.changed = { [weak self] in
             self?.settingsWindow.refresh()
@@ -84,7 +89,12 @@ func tr(_ en: String, _ ru: String) -> String {
         coordinator.discoveredLayout = { [weak self] in self?.pinMutations.synchronizeLayout() }
         displays.reconcile()
         tokens.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.displays.reconcile(); self?.synchronizeDockVisibility() }
+            Task { @MainActor in
+                guard let self else { return }
+                self.displays.reconcile()
+                self.windowReservation.configure(settings: self.settings.value, panelsHidden: self.displays.hidden)
+                self.synchronizeDockVisibility()
+            }
         })
         clock = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in Task { @MainActor in self?.render() } }
         monitor.refresh()
@@ -104,6 +114,7 @@ func tr(_ en: String, _ ru: String) -> String {
             previews.settingsChanged()
             if settings.ready { windowArrangementShortcuts.setEnabled(settings.value.windowArrangementShortcuts) }
             synchronizeDockVisibility()
+            windowReservation.configure(settings: settings.value, panelsHidden: displays.hidden)
             settingsWindow.refresh()
             refreshMenus()
             if let error = settings.failure { notify(tr("Settings recovery needed", "Нужно восстановить настройки"), error) }
@@ -121,6 +132,7 @@ func tr(_ en: String, _ ru: String) -> String {
             guard let self else { return }
             await settings.settled()
             await pinMutations.wait()
+            await windowReservation.stop()
             dockVisibility.restore()
             updateRestartReady = true
         }
@@ -454,12 +466,14 @@ func tr(_ en: String, _ ru: String) -> String {
         previews.close()
         displays.hidden.toggle()
         displays.reconcile()
+        windowReservation.configure(settings: settings.value, panelsHidden: displays.hidden)
         synchronizeDockVisibility()
         refreshMenus()
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         displays.hidden = false
         displays.reconcile()
+        windowReservation.configure(settings: settings.value, panelsHidden: displays.hidden)
         synchronizeDockVisibility()
         refreshMenus()
         return false
@@ -556,6 +570,7 @@ func tr(_ en: String, _ ru: String) -> String {
         Task {
             await settings.settled()
             await pinMutations.wait()
+            await windowReservation.stop()
             dockVisibility.restore()
             sender.reply(toApplicationShouldTerminate: true)
         }

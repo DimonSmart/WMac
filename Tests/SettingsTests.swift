@@ -19,7 +19,7 @@ import Foundation
     var value = WMacSettings(); value.theme = .dark; value.height = 40; value.opacity = 0.35; value.middleClick = false
     let a = AppDefinition(url: URL(fileURLWithPath: "/Applications/A.app"), bundleID: "a")
     let b = AppDefinition(url: URL(fileURLWithPath: "/Applications/B.app"), bundleID: "a")
-    value.dockGuidanceSeen = true; value.hideSystemDock = true
+    value.dockGuidanceSeen = true; value.hideSystemDock = true; value.reserveTaskbarSpace = true
     value.hoverPreviews = .always; value.showWindowThumbnails = false; value.setHoverOverride(.disabled, for: b)
     try await store.save(value)
     check(try await SettingsStore(url: url).load() == value, "settings survive restart")
@@ -36,7 +36,7 @@ import Foundation
     check(try JSONDecoder().decode(SettingsStore.Document.self, from: Data(contentsOf: url)).version == 5, "migration commits current schema v5")
     try Data("{\"version\":2,\"settings\":{\"allDisplays\":true,\"height\":52,\"opacity\":0.85,\"theme\":\"system\",\"middleClick\":true,\"exclusions\":[],\"dockGuidanceSeen\":true}}".utf8).write(to: url)
     let v2 = try await store.load()
-    check(!v2.hideSystemDock, "v2 migrates with Dock hiding opt-in disabled")
+    check(!v2.hideSystemDock && !v2.reserveTaskbarSpace, "v2 migrates with opt-in window management disabled")
     check(try JSONDecoder().decode(SettingsStore.Document.self, from: Data(contentsOf: url)).version == 5, "v2 migration commits schema v5")
     try Data(#"{"version":3,"settings":{"allDisplays":false,"height":52,"opacity":0.85}}"#.utf8).write(to: url)
     let v3 = try await store.load()
@@ -70,4 +70,27 @@ import Foundation
         let regions = PanelRegions(width: 1000, contentWidth: 4000, height: height)
         check(layout.height == height && layout.minX == -992 && regions.controls.minY >= 0 && regions.controls.maxY <= height && regions.controls.height >= 36 && regions.apps.height >= 36, "height \(height) preserves minimum targets and negative display geometry")
     }
+
+    let visible = CGRect(x: 0, y: 24, width: 1440, height: 876)
+    let full = CGRect(x: 0, y: 0, width: 1440, height: 900)
+    let reserved = CGRect(x: 0, y: 24, width: 1440, height: 812)
+    check(WindowReservationGeometry.adjustedFrame(visible, visible: visible, full: full, available: reserved)
+          == reserved, "zoomed window shrinks to virtual work area")
+    let tile = CGRect(x: 0, y: 462, width: 720, height: 438)
+    check(WindowReservationGeometry.adjustedFrame(tile, visible: visible, full: full, available: reserved)
+          == CGRect(x: 0, y: 462, width: 720, height: 374), "system bottom-half tiling keeps its horizontal geometry")
+    check(WindowReservationGeometry.adjustedFrame(CGRect(x: 70, y: 70, width: 1000, height: 830),
+          visible: visible, full: full, available: reserved) == nil, "manually placed windows are untouched")
+    check(WindowReservationGeometry.adjustedFrame(full, visible: visible, full: full, available: reserved) == nil,
+          "native fullscreen geometry is untouched")
+    check(WindowReservationGeometry.adjustedFrame(reserved, visible: visible, full: full, available: reserved) == nil,
+          "already corrected windows do not generate resize loops")
+    let external = WindowReservationDisplay(id: 2, frame: CGRect(x: -1200, y: 100, width: 1200, height: 800),
+        visible: CGRect(x: -1200, y: 124, width: 1200, height: 776),
+        available: CGRect(x: -1200, y: 124, width: 1200, height: 712),
+        appKitAvailable: CGRect(x: -1200, y: 64, width: 1200, height: 712))
+    let primary = WindowReservationDisplay(id: 1, frame: full, visible: visible,
+        available: reserved, appKitAvailable: reserved)
+    check(WindowReservationGeometry.bestDisplay(for: CGRect(x: -1100, y: 140, width: 1000, height: 700),
+          in: [primary, external])?.id == 2, "reservation selects the intersected external display")
 }

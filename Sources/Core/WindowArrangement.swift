@@ -60,3 +60,51 @@ enum WindowArrangement: UInt32, CaseIterable, Equatable, Sendable {
             rect.width > 0 && rect.height > 0
     }
 }
+
+
+/// Pure geometry policy for ordinary zoomed and system-tiled windows.
+/// All coordinates have the Accessibility top-left origin.
+enum WindowReservationGeometry {
+    static func approximatelyEqual(_ a: CGRect, _ b: CGRect, tolerance: CGFloat = 2) -> Bool {
+        abs(a.minX - b.minX) <= tolerance && abs(a.minY - b.minY) <= tolerance &&
+        abs(a.width - b.width) <= tolerance && abs(a.height - b.height) <= tolerance
+    }
+
+    static func bestDisplay(for window: CGRect, in displays: [WindowReservationDisplay]) -> WindowReservationDisplay? {
+        displays.compactMap { display -> (WindowReservationDisplay, CGFloat)? in
+            let intersection = window.intersection(display.frame)
+            guard !intersection.isNull, !intersection.isEmpty else { return nil }
+            return (display, intersection.width * intersection.height)
+        }.max(by: { $0.1 < $1.1 })?.0
+    }
+
+    static func adjustedFrame(_ window: CGRect, visible: CGRect, full: CGRect, available: CGRect) -> CGRect? {
+        let tolerance: CGFloat = 16
+        guard window.width > 0, window.height > 0, visible.width > 0, visible.height > 0,
+              available.height > 0, !approximatelyEqual(window, full),
+              window.maxY > available.maxY + 2,
+              abs(window.maxY - visible.maxY) <= tolerance,
+              window.minX >= visible.minX - tolerance,
+              window.maxX <= visible.maxX + tolerance,
+              abs(window.minY - visible.minY) <= tolerance ||
+                  abs(window.minY - visible.midY) <= tolerance else { return nil }
+        let grid: [CGFloat] = [0, 0.25, 1.0 / 3, 0.5, 2.0 / 3, 0.75, 1]
+        func onGrid(_ edge: CGFloat) -> Bool {
+            grid.contains { abs(edge - (visible.minX + visible.width * $0)) <= tolerance }
+        }
+        guard onGrid(window.minX), onGrid(window.maxX) else { return nil }
+        let height = available.maxY - window.minY
+        guard height > 0 else { return nil }
+        return CGRect(x: window.minX, y: window.minY, width: window.width, height: height)
+    }
+}
+
+/// A virtual work area. macOS does not let third-party panels change NSScreen.visibleFrame.
+struct WindowReservationDisplay: Equatable {
+    let id: UInt32
+    let frame: CGRect          // Accessibility coordinates (top-left origin).
+    let visible: CGRect
+    let available: CGRect
+    let appKitAvailable: CGRect
+
+}

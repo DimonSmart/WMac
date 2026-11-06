@@ -134,6 +134,10 @@ import ServiceManagement
         behavior.addArrangedSubview(text(tr("Shift-click always requests a new independent instance.", "Shift + клик всегда запрашивает новый независимый экземпляр.")))
         toggle(behavior, tr("Middle-click requests a new instance", "Средний клик запрашивает новый экземпляр"), value.middleClick) { [weak self] on in self?.runtime.settings.edit { $0.middleClick = on } }
         behavior.addArrangedSubview(text(tr("Click an instance to switch to it; click the active instance again to minimize its window. Window control requires Accessibility. Without it, the exact process is activated.", "Нажмите на экземпляр, чтобы переключиться на него; повторное нажатие на активный экземпляр свернёт его окно. Для управления окнами нужен Универсальный доступ. Без него активируется точный процесс.")))
+        toggle(behavior, tr("Keep maximized windows above WMac taskbar", "Не перекрывать развёрнутые окна панелью WMac"), value.reserveTaskbarSpace) { [weak self] on in
+            self?.runtime.settings.edit { $0.reserveTaskbarSpace = on }
+        }
+        behavior.addArrangedSubview(text(tr("Uses Accessibility to adjust ordinary maximized and tiled windows. Fullscreen and manually positioned windows are excluded. Changes are best-effort and revert when the feature is disabled, unless the window was changed again.", "Использует Универсальный доступ для изменения обычных развёрнутых окон и окон в плиточной раскладке. Полноэкранные и вручную размещённые окна не затрагиваются. При отключении геометрия восстанавливается, если окно не изменяли после коррекции.")))
         toggle(behavior, tr("Enable window arrangement shortcuts", "Включить сочетания для расположения окон"), value.windowArrangementShortcuts) { [weak self] on in
             self?.runtime.settings.edit { $0.windowArrangementShortcuts = on }
         }

@@ -24,6 +24,7 @@ final class WindowArrangementShortcuts {
     private(set) var registrationError: String?
     var changed: (() -> Void)?
     var notify: ((String, String) -> Void)?
+    var workAreaForScreen: ((NSScreen) -> CGRect)?
 
     init(accessibility: AccessibilityService, permissions: AccessibilityPermissionService) {
         self.accessibility = accessibility
@@ -116,7 +117,7 @@ final class WindowArrangementShortcuts {
         }
         guard let window = windows.first(where: { $0.isFocused && !$0.isMinimized }),
               let current = window.frame,
-              let workArea = Self.accessibilityWorkArea(for: current) else {
+              let workArea = accessibilityWorkArea(for: current) else {
             notify?(tr("No focused manageable window", "Нет сфокусированного управляемого окна"),
                     tr("The shortcut only acts on the current window of the frontmost application.",
                        "Сочетание действует только на текущее окно активной программы."))
@@ -151,7 +152,7 @@ final class WindowArrangementShortcuts {
 
     /// AXPosition and CGWindowBounds use a top-left global origin; NSScreen uses a
     /// bottom-left origin. Convert the visible AppKit work area before AX writes.
-    private static func accessibilityWorkArea(for accessibilityFrame: CGRect) -> CGRect? {
+    private func accessibilityWorkArea(for accessibilityFrame: CGRect) -> CGRect? {
         let screens = NSScreen.screens
         guard !screens.isEmpty else { return nil }
         let primary = screens.first {
@@ -163,7 +164,7 @@ final class WindowArrangementShortcuts {
         let center = CGPoint(x: appKitFrame.midX, y: appKitFrame.midY)
         let screen = screens.min { distance(center, to: $0.frame) < distance(center, to: $1.frame) }
         guard let screen else { return nil }
-        let visible = screen.visibleFrame
+        let visible = workAreaForScreen?(screen) ?? screen.visibleFrame
         let area = CGRect(x: visible.minX, y: primaryTop - visible.maxY, width: visible.width, height: visible.height)
         return area.width > 0 && area.height > 0 ? area : nil
     }
