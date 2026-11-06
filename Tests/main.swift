@@ -50,8 +50,6 @@ check(state.snapshot.buttons.first?.instance == nil && state.snapshot.buttons.co
 let reusedOne = fixture(11, 99)
 state.apply([reusedOne], active: one.id)
 check(represented(state) == [reusedOne.id] && state.instance(for: .instance(one.id)) == nil && state.snapshot.activeInstance == nil, "PID reuse removes stale button action and highlight")
-state.setExclusions([a]); check(represented(state).isEmpty, "exclusion seam filters eligible instances")
-state.setExclusions([]); check(represented(state) == [reusedOne.id], "removing exclusion restores current raw snapshot")
 let secondPin = resolved(b)
 _ = state.add(secondPin); state.move(secondPin.pin.id, to: 0)
 check(state.pins.map { $0.pin.id } == [secondPin.pin.id, pinned.pin.id], "pin order can be changed")

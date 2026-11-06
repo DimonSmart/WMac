@@ -19,10 +19,10 @@ import Foundation
     var value = WMacSettings(); value.theme = .dark; value.height = 40; value.opacity = 0.35; value.middleClick = false
     let a = AppDefinition(url: URL(fileURLWithPath: "/Applications/A.app"), bundleID: "a")
     let b = AppDefinition(url: URL(fileURLWithPath: "/Applications/B.app"), bundleID: "a")
-    value.exclusions = [a]; value.dockGuidanceSeen = true; value.hideSystemDock = true
+    value.dockGuidanceSeen = true; value.hideSystemDock = true
     value.hoverPreviews = .always; value.showWindowThumbnails = false; value.setHoverOverride(.disabled, for: b)
     try await store.save(value)
-    check(try await SettingsStore(url: url).load() == value, "settings and exact exclusions survive restart")
+    check(try await SettingsStore(url: url).load() == value, "settings survive restart")
     let bytes = try Data(contentsOf: url)
     let json = String(decoding: bytes, as: UTF8.self)
     check(!json.contains("pid") && !json.contains("launchDate") && !json.contains("windowID"), "persistent settings contain no process or window lifetime identifiers")
@@ -33,15 +33,15 @@ import Foundation
     try Data("{\"version\":1,\"allDisplays\":false,\"height\":64,\"middleClick\":false}".utf8).write(to: url)
     let migrated = try await store.load()
     check(!migrated.allDisplays && migrated.height == 64 && !migrated.middleClick && migrated.opacity == 0.85, "version 1 migrates supplied fields with current defaults")
-    check(try JSONDecoder().decode(SettingsStore.Document.self, from: Data(contentsOf: url)).version == 4, "migration commits current schema v4")
+    check(try JSONDecoder().decode(SettingsStore.Document.self, from: Data(contentsOf: url)).version == 5, "migration commits current schema v5")
     try Data("{\"version\":2,\"settings\":{\"allDisplays\":true,\"height\":52,\"opacity\":0.85,\"theme\":\"system\",\"middleClick\":true,\"exclusions\":[],\"dockGuidanceSeen\":true}}".utf8).write(to: url)
     let v2 = try await store.load()
     check(!v2.hideSystemDock, "v2 migrates with Dock hiding opt-in disabled")
-    check(try JSONDecoder().decode(SettingsStore.Document.self, from: Data(contentsOf: url)).version == 4, "v2 migration commits schema v4")
+    check(try JSONDecoder().decode(SettingsStore.Document.self, from: Data(contentsOf: url)).version == 5, "v2 migration commits schema v5")
     try Data(#"{"version":3,"settings":{"allDisplays":false,"height":52,"opacity":0.85}}"#.utf8).write(to: url)
     let v3 = try await store.load()
     check(!v3.allDisplays && v3.hoverPreviews == .automatic && v3.showWindowThumbnails && v3.appPreviewPreferences.isEmpty, "v3 migration defaults preserve existing settings")
-    check(try JSONDecoder().decode(SettingsStore.Document.self, from: Data(contentsOf: url)).version == 4, "v3 migration commits schema v4")
+    check(try JSONDecoder().decode(SettingsStore.Document.self, from: Data(contentsOf: url)).version == 5, "v3 migration commits schema v5")
     check(!value.shouldPreview(4, app: b) && value.shouldPreview(1, app: a), "per-application override and legacy always setting use definition identity")
     for badBytes in [Data("broken".utf8), Data("{\"version\":999}".utf8)] {
         try badBytes.write(to: url)
@@ -61,10 +61,8 @@ import Foundation
     let pin = ResolvedPin(pin: Pin(application: a, name: "A"), availability: .available, recoveryNote: nil)
     let one = Instance(id: InstanceID(pid: 17, startDate: Date()), name: "A", url: a.url, bundleID: a.bundleID)
     let two = Instance(id: InstanceID(pid: 18, startDate: Date()), name: "B", url: b.url, bundleID: b.bundleID)
-    state.restore([pin]); state.apply([one, two], active: one.id); state.setExclusions([a])
-    check(state.snapshot.buttons.count == 1 && state.snapshot.buttons[0].application == b && state.pins.count == 1 && state.snapshot.activeInstance == nil, "exclusions hide exact app pins/processes and preserve other paths and saved pins")
-    state.setExclusions([])
-    check(state.snapshot.buttons.count == 2 && state.snapshot.buttons[0].pinID == pin.pin.id, "restoring exclusion restores coordinator binding without duplicate processes")
+    state.restore([pin]); state.apply([one, two], active: one.id)
+    check(state.snapshot.buttons.count == 2 && state.snapshot.buttons[0].pinID == pin.pin.id, "all supported applications remain represented alongside their pins")
     let screens = [DisplayLayout(id: 2, frame: CGRect(x: -1000, y: 0, width: 1000, height: 900)), DisplayLayout(id: 1, frame: CGRect(x: 0, y: 0, width: 1000, height: 900))]
     check(DisplayLayout.selected(screens, all: false, primary: 1).map(\.id) == [1] && DisplayLayout.selected(screens, all: true, primary: 1).count == 2, "primary selection follows identity independent of focus or array position")
     for height: Double in [40, 52, 64] {

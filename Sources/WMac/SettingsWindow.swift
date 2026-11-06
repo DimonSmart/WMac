@@ -121,6 +121,7 @@ import ServiceManagement
             button(general, tr("Restore system Dock", "Восстановить системный Dock")) { [weak self] in self?.runtime.restoreSystemDock() }
         }
         button(general, tr("Dock settings…", "Настройки Dock…")) { [weak self] in self?.runtime.dockSettings() }
+        button(general, tr("Reset settings…", "Сбросить настройки…")) { [weak self] in self?.confirmReset(recovery: false) }
         let appearance = section(tr("Appearance", "Вид"))
         appearance.addArrangedSubview(text(tr("Panel height: \(Int(value.height)) pt", "Высота панели: \(Int(value.height)) пт")))
         let height = NSSlider(value: value.height, minValue: 40, maxValue: 64, target: self, action: #selector(heightChanged(_:)))
@@ -174,37 +175,6 @@ import ServiceManagement
             choice.setAccessibilityLabel(tr("Hover preview for ", "Предпросмотр для ") + app.url.lastPathComponent)
             previews.addArrangedSubview(choice)
         }
-        let apps = section(tr("Applications", "Приложения"))
-        apps.addArrangedSubview(text(tr("Pinned applications — reorder, unpin or relink below:", "Закрепления — здесь можно изменить порядок, открепить или восстановить путь:")))
-        for (index, pin) in runtime.coordinator.pins.enumerated() {
-            let row = NSStackView()
-            row.orientation = .horizontal
-            row.alignment = .centerY
-            row.spacing = 8
-            row.addArrangedSubview(text(pin.pin.name))
-            if index > 0 {
-                button(row, tr("Up", "Выше")) { [weak self] in self?.runtime.movePin(pin.pin.id, to: index - 1) }
-            }
-            if index + 1 < runtime.coordinator.pins.count {
-                button(row, tr("Down", "Ниже")) { [weak self] in self?.runtime.movePin(pin.pin.id, to: index + 1) }
-            }
-            if let captured = runtime.coordinator.snapshot.buttons.first(where: { $0.pinID == pin.pin.id }) {
-                let capture = ButtonCapture(captured)
-                button(row, tr("Unpin", "Открепить")) { [weak self] in self?.runtime.pinMutations.submit(.remove(capture)) }
-                if pin.availability == .missing {
-                    button(row, tr("Relink…", "Изменить путь…")) { [weak self] in self?.runtime.chooseReplacement(capture) }
-                }
-            } else {
-                row.addArrangedSubview(text(tr("Excluded", "Исключено")))
-            }
-            apps.addArrangedSubview(row)
-        }
-        apps.addArrangedSubview(text(tr("Exclusions hide both running buttons and pins; saved pins remain intact.", "Исключения скрывают процессы и закрепления; сохранённые закрепления остаются.")))
-        button(apps, tr("Exclude application…", "Исключить приложение…")) { [weak self] in self?.excludeApplication() }
-        for definition in value.exclusions {
-            button(apps, tr("Restore: ", "Вернуть: ") + definition.url.path) { [weak self] in self?.runtime.settings.edit { $0.exclusions.removeAll { $0 == definition } } }
-        }
-        button(apps, tr("Reset settings…", "Сбросить настройки…")) { [weak self] in self?.confirmReset(recovery: false) }
         let permissions = section(tr("Permissions", "Разрешения"))
         permissions.addArrangedSubview(text(runtime.permissions.trusted ? tr("Accessibility: enabled", "Универсальный доступ: включён") : tr("Accessibility: unavailable", "Универсальный доступ: недоступен")))
         permissions.addArrangedSubview(text(tr("Accessibility enables window listing, selection, restore and minimization. Process discovery, pins, launching, switching by PID and termination work without it. Screen Recording is requested only when the user explicitly enables thumbnails.", "Универсальный доступ позволяет выбирать, восстанавливать и сворачивать окна. Процессы, закрепления, запуск, переключение по PID и завершение работают без него. Запись экрана запрашивается только после явного разрешения пользователя.")))
@@ -240,19 +210,6 @@ import ServiceManagement
     @objc private func heightChanged(_ sender: NSSlider) { let v = sender.doubleValue; runtime.settings.edit { $0.height = v } }
     @objc private func themeChanged(_ sender: NSPopUpButton) { let v = WMacSettings.Theme.allCases[sender.indexOfSelectedItem]; runtime.settings.edit { $0.theme = v } }
     @objc private func opacityChanged(_ sender: NSSlider) { let v = sender.doubleValue; runtime.settings.edit { $0.opacity = v } }
-    private func excludeApplication() {
-        let picker = NSOpenPanel(); picker.allowedContentTypes = [.applicationBundle]; picker.allowsMultipleSelection = false
-        guard let window else { return }
-        picker.beginSheetModal(for: window) { [weak self] result in
-            guard result == .OK, let url = picker.url else { return }
-            Task { @MainActor in
-                guard let self else { return }
-                guard let pin = await self.runtime.pins.prepare(url: url) else { return }
-                let definition = pin.pin.application
-                self.runtime.settings.edit { if !$0.exclusions.contains(definition) { $0.exclusions.append(definition) } }
-            }
-        }
-    }
     private func confirmDockHiding() {
         runtime.confirmDockHiding(sheetFor: window) { [weak self] in self?.refresh() }
     }

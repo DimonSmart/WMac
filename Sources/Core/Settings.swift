@@ -20,7 +20,6 @@ struct WMacSettings: Codable, Equatable, Sendable {
     var opacity: Double = 0.85
     var theme: Theme = .system
     var middleClick = true
-    var exclusions: [AppDefinition] = []
     var dockGuidanceSeen = false
     var hideSystemDock = false
     var hoverPreviews: HoverPreviewMode = .automatic
@@ -46,7 +45,7 @@ struct WMacSettings: Codable, Equatable, Sendable {
 
     init() {}
     enum CodingKeys: String, CodingKey {
-        case allDisplays, height, opacity, theme, middleClick, exclusions, dockGuidanceSeen, hideSystemDock, hoverPreviews, showWindowThumbnails, appPreviewPreferences, windowArrangementShortcuts
+        case allDisplays, height, opacity, theme, middleClick, dockGuidanceSeen, hideSystemDock, hoverPreviews, showWindowThumbnails, appPreviewPreferences, windowArrangementShortcuts
     }
     init(from decoder: Decoder) throws {
         self.init()
@@ -56,7 +55,6 @@ struct WMacSettings: Codable, Equatable, Sendable {
         opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? opacity
         theme = try c.decodeIfPresent(Theme.self, forKey: .theme) ?? theme
         middleClick = try c.decodeIfPresent(Bool.self, forKey: .middleClick) ?? middleClick
-        exclusions = try c.decodeIfPresent([AppDefinition].self, forKey: .exclusions) ?? exclusions
         dockGuidanceSeen = try c.decodeIfPresent(Bool.self, forKey: .dockGuidanceSeen) ?? dockGuidanceSeen
         hideSystemDock = try c.decodeIfPresent(Bool.self, forKey: .hideSystemDock) ?? false
         hoverPreviews = try c.decodeIfPresent(HoverPreviewMode.self, forKey: .hoverPreviews) ?? .automatic
@@ -66,7 +64,6 @@ struct WMacSettings: Codable, Equatable, Sendable {
     }
     func validated() throws -> Self {
         guard height.isFinite, (40...64).contains(height), opacity.isFinite, (0.35...1).contains(opacity),
-              exclusions.allSatisfy({ $0.url.isFileURL && !$0.bundleID.isEmpty }), Set(exclusions).count == exclusions.count,
               appPreviewPreferences.allSatisfy({ $0.application.url.isFileURL && !$0.application.bundleID.isEmpty }),
               Set(appPreviewPreferences.map(\.application)).count == appPreviewPreferences.count else { throw SettingsError.invalid }
         return self
@@ -96,7 +93,7 @@ actor SettingsStore {
         let version = try JSONDecoder().decode(Header.self, from: data).version
         let result: WMacSettings
         switch version {
-        case 2, 3, 4: result = try JSONDecoder().decode(Document.self, from: data).settings
+        case 2, 3, 4, 5: result = try JSONDecoder().decode(Document.self, from: data).settings
         case 1:
             let old = try JSONDecoder().decode(Legacy.self, from: data)
             var migrated = WMacSettings(); migrated.allDisplays = old.allDisplays; migrated.height = old.height; migrated.middleClick = old.middleClick
@@ -104,12 +101,12 @@ actor SettingsStore {
         default: throw SettingsError.unsupported(version)
         }
         let valid = try result.validated()
-        if version != 4 { try save(valid) }
+        if version != 5 { try save(valid) }
         return valid
     }
     func save(_ value: WMacSettings) throws {
         let valid = try value.validated()
-        try io.write(JSONEncoder().encode(Document(version: 4, settings: valid)), url)
+        try io.write(JSONEncoder().encode(Document(version: 5, settings: valid)), url)
     }
     /// Explicit recovery preserves the exact damaged/future file before replacement.
     func recover() throws -> WMacSettings {

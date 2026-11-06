@@ -100,7 +100,7 @@ func tr(_ en: String, _ ru: String) -> String {
         windowArrangementShortcuts.notify = { [weak self] title, details in self?.notify(title, details) }
         settings.changed = { [weak self] in
             guard let self else { return }
-            coordinator.setExclusions(Set(settings.value.exclusions)); displays.reconcile()
+            displays.reconcile()
             previews.settingsChanged()
             if settings.ready { windowArrangementShortcuts.setEnabled(settings.value.windowArrangementShortcuts) }
             synchronizeDockVisibility()
@@ -267,7 +267,6 @@ func tr(_ en: String, _ ru: String) -> String {
         pinMutations.submit(.add(application.definition, application.name))
     }
     func dropApplications(_ urls: [URL]) { pinMutations.submit(.drop(urls)) }
-    func movePin(_ id: UUID, to index: Int) { pinMutations.submit(.move(id, index)) }
     func moveButton(_ capture: ButtonCapture, to index: Int) { pinMutations.submit(.reorder(capture, index)) }
     @objc private func retryPins() { pinMutations.retry() }
     func chooseReplacement(_ capture: ButtonCapture) {

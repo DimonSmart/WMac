@@ -55,16 +55,13 @@ enum TaskbarPlacement: Hashable, Sendable {
 /// process to a pin or choose a persistent slot.
 @MainActor final class TaskbarCoordinator {
     private(set) var pins: [ResolvedPin] = []
-    private var allInstances: [Instance] = []
     private var instances: [Instance] = []
-    private var rawActive: InstanceID?
     private var active: InstanceID?
     private var order: [InstanceID] = []
     private var assignments: [UUID: InstanceID] = [:]
     private var placements: [TaskbarPlacement] = []
     private var processPlacements: [InstanceID: TaskbarPlacement] = [:]
     private var buttonPlacements: [TaskbarButtonID: TaskbarPlacement] = [:]
-    private var excluded: Set<AppDefinition> = []
     private(set) var snapshot = TaskbarSnapshot(buttons: [], activeInstance: nil)
     var changed: ((TaskbarSnapshot) -> Void)?
     var discoveredLayout: (() -> Void)?
@@ -92,9 +89,8 @@ enum TaskbarPlacement: Hashable, Sendable {
     }
 
     func apply(_ values: [Instance], active: InstanceID?) {
-        allInstances = values; rawActive = active
         var seen = Set<InstanceID>()
-        instances = values.filter { seen.insert($0.id).inserted && !($0.definition.map { excluded.contains($0) } ?? false) }
+        instances = values.filter { seen.insert($0.id).inserted }
         self.active = active.flatMap { id in instances.contains(where: { $0.id == id }) ? id : nil }
         let live = Set(instances.map(\.id))
         order.removeAll { !live.contains($0) }
@@ -102,8 +98,6 @@ enum TaskbarPlacement: Hashable, Sendable {
         order += instances.filter { !known.contains($0.id) }.sorted(by: Self.earlier).map(\.id)
         compose()
     }
-    func setExclusions(_ values: Set<AppDefinition>) { excluded = values; apply(allInstances, active: rawActive) }
-
     /// Used to persist the exact intended layout before publishing a pin addition.
     func layoutAddingPin(_ id: UUID, replacing button: TaskbarButtonID? = nil,
                          application: AppDefinition? = nil) -> [TaskbarPlacement] {
@@ -244,7 +238,7 @@ enum TaskbarPlacement: Hashable, Sendable {
             }.sorted(by: Self.earlier)
             return (matches.firstIndex(where: { $0.id == instance.id }) ?? 0) + 1
         }
-        for resolved in pins where !excluded.contains(resolved.pin.application) {
+        for resolved in pins {
             let pin = resolved.pin
             let matches = instances.filter { $0.definition == pin.application }.sorted(by: Self.earlier)
             let previous = assignments[pin.id].flatMap { byID[$0] }.flatMap { $0.definition == pin.application ? $0 : nil }
