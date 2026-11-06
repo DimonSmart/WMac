@@ -162,7 +162,7 @@ final class WindowArrangementShortcuts {
         let appKitFrame = CGRect(x: accessibilityFrame.minX, y: primaryTop - accessibilityFrame.maxY,
                                  width: accessibilityFrame.width, height: accessibilityFrame.height)
         let center = CGPoint(x: appKitFrame.midX, y: appKitFrame.midY)
-        let screen = screens.min { distance(center, to: $0.frame) < distance(center, to: $1.frame) }
+        let screen = screens.min { Self.distance(center, to: $0.frame) < Self.distance(center, to: $1.frame) }
         guard let screen else { return nil }
         let visible = workAreaForScreen?(screen) ?? screen.visibleFrame
         let area = CGRect(x: visible.minX, y: primaryTop - visible.maxY, width: visible.width, height: visible.height)
