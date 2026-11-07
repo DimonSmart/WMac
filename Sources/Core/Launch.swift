@@ -21,7 +21,9 @@ final class LaunchService {
         configuration.activates = true
         configuration.createsNewApplicationInstance = false
         let callback = CallbackState()
-        NSWorkspace.shared.openApplication(at: definition.url, configuration: configuration) { app, error in
+        // LaunchServices may invoke this on its open queue. @Sendable prevents
+        // inheriting MainActor isolation before the explicit hop below.
+        NSWorkspace.shared.openApplication(at: definition.url, configuration: configuration) { @Sendable app, error in
             Task { @MainActor in callback.completed = true; callback.app = app; callback.error = error?.localizedDescription }
         }
         let deadline = Date().addingTimeInterval(timeout)
@@ -52,7 +54,7 @@ final class LaunchService {
         configuration.activates = true
         configuration.arguments = arguments
         let callback = CallbackState()
-        NSWorkspace.shared.openApplication(at: definition.url, configuration: configuration) { app, error in
+        NSWorkspace.shared.openApplication(at: definition.url, configuration: configuration) { @Sendable app, error in
             Task { @MainActor in callback.completed = true; callback.app = app; callback.error = error?.localizedDescription }
         }
         let deadline = Date().addingTimeInterval(max(0.2, timeout))

@@ -72,7 +72,11 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
         case .unconfirmed(let message): print("UNCONFIRMED \(label): \(message)"); return nil
         }
     }
-    guard let first = confirmed(await launcher.launch(multi), "multi 1") else { check(false, "first real GUI launch"); return 1 }
+    // Exercise the idle-pin callback as well as independent launch callbacks.
+    guard let first = confirmed(await launcher.open(multi), "ordinary multi 1") else { check(false, "first ordinary GUI launch"); return 1 }
+    if case .success(let reopened) = await launcher.open(multi) {
+        check(reopened.id == first.id, "ordinary open reuses the existing GUI process")
+    } else { check(false, "ordinary open confirms an existing GUI process") }
     // Concurrent requests have separate callbacks and baselines.
     async let secondResult = launcher.launch(multi)
     async let thirdResult = launcher.launch(multi)
