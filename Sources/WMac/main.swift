@@ -108,7 +108,7 @@ import AppKit
             Task { @MainActor in
                 self.log("Waiting for a new actual GUI PID: \(url.path)")
                 switch await self.launcher.launch(AppDefinition(url: url, bundleID: bundleID)) {
-                case .success(let instance): self.selected = instance; self.log("SUCCESS PID \(instance.id.pid)")
+                case .success(let instance, _): self.selected = instance; self.log("SUCCESS PID \(instance.id.pid)")
                 case .accessorySuccess(let pid): self.log("SUCCESS menu-bar app PID \(pid); not taskbar-managed")
                 case .error(let message): self.log("ERROR \(message)")
                 case .unconfirmed(let message): self.log("UNCONFIRMED \(message)")
