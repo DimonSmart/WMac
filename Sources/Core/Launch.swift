@@ -1,7 +1,7 @@
 import AppKit
 
 enum LaunchResult {
-    case success(Instance)
+    case success(Instance, newProcess: Bool)
     case accessorySuccess(pid: pid_t)
     case error(String)
     case unconfirmed(String)
@@ -17,6 +17,7 @@ final class LaunchService {
         guard await Task.detached(operation: { Bundle(url: definition.url)?.bundleIdentifier == definition.bundleID }).value else {
             return .error("Application bundle is missing or its identity changed")
         }
+        let baseline = Set(monitor.instances(of: definition).map(\.id))
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
         configuration.createsNewApplicationInstance = false
@@ -30,9 +31,11 @@ final class LaunchService {
         while Date() < deadline {
             if callback.completed {
                 if let error = callback.error { return .error(error) }
-                if let app = callback.app, definition.matches(app),
+                if let app = callback.app, app.isFinishedLaunching, definition.matches(app),
                    let instance = monitor.instances(of: definition).first(where: { $0.id.pid == app.processIdentifier }),
-                   monitor.running(instance.id) != nil { return .success(instance) }
+                   monitor.running(instance.id) != nil {
+                    return .success(instance, newProcess: !baseline.contains(instance.id))
+                }
                 if let app = callback.app, definition.matches(app), app.activationPolicy == .accessory,
                    let live = NSRunningApplication(processIdentifier: app.processIdentifier),
                    definition.matches(live), !live.isTerminated, live.isFinishedLaunching,
@@ -68,7 +71,7 @@ final class LaunchService {
                     try? await Task.sleep(for: .milliseconds(350))
                     if monitor.instances(of: definition).contains(where: { $0.id == instance.id }), monitor.running(instance.id) != nil {
                         _ = monitor.activate(instance.id)
-                        return .success(instance)
+                        return .success(instance, newProcess: true)
                     }
                 }
             }
