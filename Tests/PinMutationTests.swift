@@ -21,6 +21,20 @@ import AppKit
     await operations.wait()
     let restarted = try await store.load()
     check(restarted.pins.map { $0.pin.application } == [b, a] && state.pins.map(\.pin) == restarted.pins.map(\.pin), "rapid reorders commit latest FIFO order consistently with restart")
+    let remembered = SavedWindowPlacement(displayUUID: UUID(), x: 123, y: 45, width: 800, height: 600)
+    let positionCapture = ButtonCapture(state.snapshot.buttons[0])
+    operations.submit(.placement(positionCapture, remembered)); await operations.wait()
+    check(state.pins[0].pin.savedWindowPlacement == remembered &&
+          (try await store.load()).pins[0].pin.savedWindowPlacement == remembered,
+          "remember commits the new geometry into the pin and the atomic v4 file")
+    let replacement = SavedWindowPlacement(displayUUID: UUID(), x: -100, y: 20, width: 600, height: 420)
+    operations.submit(.placement(positionCapture, replacement)); await operations.wait()
+    check((try await store.load()).pins[0].pin.savedWindowPlacement == replacement,
+          "remembering again replaces the previous monitor and geometry")
+    operations.submit(.placement(positionCapture, nil)); await operations.wait()
+    check(state.pins[0].pin.savedWindowPlacement == nil &&
+          (try await store.load()).pins[0].pin.savedWindowPlacement == nil,
+          "forget clears saved position without changing pin identity or order")
     let captured = ButtonCapture(state.snapshot.buttons[0])
     state.relink(id, to: ResolvedPin(pin: Pin(application: a, name: "A"), availability: .available, recoveryNote: nil)) // duplicate rejected
     state.remove(id)
@@ -40,10 +54,13 @@ import AppKit
     check(state.pins.count == 2 && state.pins.last?.pin.application.url == real, "valid Finder bundle validation deduplicates repeated exact identities")
     let relinkID = state.pins[0].pin.id
     let relinkCapture = ButtonCapture(state.snapshot.buttons[0])
+    operations.submit(.placement(relinkCapture, remembered)); await operations.wait()
     operations.submit(.relink(relinkCapture, real)); await operations.wait()
     check(operations.failure != nil && state.pins[0].pin.id == relinkID && state.pins[0].pin.application == a, "replacement rejects identity already pinned without altering original")
     operations.submit(.relink(relinkCapture, URL(fileURLWithPath: "/System/Applications/Calculator.app"))); await operations.wait()
-    check(state.pins[0].pin.id == relinkID && state.pins[0].pin.application.bundleID == "com.apple.calculator", "replacement picker mutation preserves UUID and installs validated new bundle identity")
+    check(state.pins[0].pin.id == relinkID && state.pins[0].pin.application.bundleID == "com.apple.calculator" &&
+          state.pins[0].pin.savedWindowPlacement == nil,
+          "explicit Relink retains the pin UUID but intentionally resets remembered window geometry")
     var failureIO = io
     failureIO.write = { _, _ in throw CocoaError(.fileWriteNoPermission) }
     let failedState = TaskbarCoordinator()
@@ -53,6 +70,11 @@ import AppKit
     // Restore does not refresh the deliberately invalid bookmarks, so load succeeds.
     failed.submit(.add(b, "B")); await failed.wait()
     check(try failed.loaded && failed.failure != nil && failedState.pins.count == 2 && Data(contentsOf: path) == saved, "save failure keeps original UI and bytes and exposes retry state")
+    let failureCapture = ButtonCapture(failedState.snapshot.buttons[0])
+    failed.submit(.placement(failureCapture, remembered)); await failed.wait()
+    check(try failed.failure != nil && failedState.pins[0].pin.savedWindowPlacement == nil &&
+          Data(contentsOf: path) == saved,
+          "failed atomic placement update cannot publish new geometry or alter saved bytes")
     try Data("invalid original".utf8).write(to: path)
     let invalidState = TaskbarCoordinator()
     let recovery = PinMutations(coordinator: invalidState, store: store)
@@ -161,4 +183,29 @@ import AppKit
           "v2 pins migrate to durable pin slots with preserved identity")
     let migratedAgain = try await v2Store.load()
     check(!migratedAgain.migrated, "v2 migration is idempotent")
+    struct LegacyV3: Codable {
+        let version: Int
+        let pins: [Pin]
+        let layout: [TaskbarLayoutSlot]
+    }
+    let v3URL = dir.appendingPathComponent("pins-v3.json")
+    try JSONEncoder().encode(LegacyV3(version: 3, pins: [oldPin], layout: [.pin(oldPin.id)])).write(to: v3URL)
+    let v3Store = PinStore(url: v3URL, io: io)
+    let v3Load = try await v3Store.load()
+    check(v3Load.migrated && v3Load.pins[0].pin.id == oldPin.id &&
+          v3Load.pins[0].pin.savedWindowPlacement == nil &&
+          v3Load.layout == [.pin(oldPin.id)],
+          "v3 layout and pin identity migrate to v4 without an invented window position")
+    let v3JSON = try Data(contentsOf: v3URL)
+    check(try JSONDecoder().decode(LegacyV3.self, from: v3JSON).version == 4 &&
+          !(try await v3Store.load()).migrated,
+          "v3 migration commits schema v4 atomically and is idempotent")
+    let invalid = Pin(id: oldPin.id, application: a, name: "Bad",
+                      savedWindowPlacement: SavedWindowPlacement(displayUUID: UUID(), x: 0, y: 0, width: 0, height: 120))
+    do {
+        try await v3Store.save([invalid])
+        check(false, "invalid placement is rejected")
+    } catch {
+        check(try Data(contentsOf: v3URL) == v3JSON, "invalid placement leaves previously saved v4 bytes untouched")
+    }
 }
