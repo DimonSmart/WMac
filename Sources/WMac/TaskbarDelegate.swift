@@ -14,6 +14,24 @@ func tr(_ en: String, _ ru: String) -> String {
     let accessibility = AccessibilityService()
     let permissions = AccessibilityPermissionService()
     lazy var launcher = LaunchService(monitor: monitor)
+    lazy var windowPlacement = WindowPlacementService(
+        displays: { [weak self] in
+            WindowPlacementDisplay.connected { screen in
+                self?.windowReservation.workArea(for: screen) ?? screen.visibleFrame
+            }
+        },
+        trusted: { [weak self] in self?.accessibility.trusted ?? false },
+        live: { [weak self] id in self?.monitor.running(id) != nil },
+        windows: { [weak self] id in
+            guard let self else { return .unavailable("WMac is no longer running.", nil) }
+            return await self.accessibility.windows(for: id)
+        },
+        arrange: { [weak self] id, window, expected, target in
+            guard let self else { return false }
+            return await self.accessibility.arrangeReservation(
+                id, windowID: window, expected: expected, target: target)
+        }
+    )
     lazy var displays = DisplayCoordinator(runtime: self)
     lazy var previews = WindowPreviewController(runtime: self)
     lazy var windowArrangementShortcuts = WindowArrangementShortcuts(accessibility: accessibility, permissions: permissions)
@@ -217,7 +235,7 @@ func tr(_ en: String, _ ru: String) -> String {
         }
 
         switch await launcher.open(definition) {
-        case .success(let opened):
+        case .success(let opened, _):
             monitor.refresh()
             let deadline = Date().addingTimeInterval(3)
             var windowStateUnavailable = false
@@ -255,12 +273,31 @@ func tr(_ en: String, _ ru: String) -> String {
         launch(definition, independent: independent)
     }
     func launch(_ definition: AppDefinition, independent: Bool = false) {
+        let pinnedID = coordinator.pins.first(where: { $0.pin.application == definition })?.pin.id
         pending[definition, default: 0] += 1; render()
         Task {
             let result = independent ? await launcher.launch(definition) : await launcher.open(definition)
             pending[definition, default: 1] -= 1
             switch result {
-            case .success: notify(tr("Launch confirmed", "Запуск подтверждён"))
+            case .success(let opened, let newProcess):
+                // Switching to an existing PID must never restore geometry.
+                // The deadline begins at the confirmed launch, not the initial click.
+                let deadline = Date().addingTimeInterval(5)
+                notify(tr("Launch confirmed", "Запуск подтверждён"))
+                if newProcess, let pinnedID,
+                   let saved = coordinator.pins.first(where: {
+                       $0.pin.id == pinnedID && $0.pin.application == definition
+                   })?.pin.savedWindowPlacement {
+                    Task { [weak self] in
+                        guard let self else { return }
+                        _ = await windowPlacement.restore(saved, for: opened.id, deadline: deadline) {
+                            self.coordinator.pins.first(where: { $0.pin.id == pinnedID })?.pin
+                                .savedWindowPlacement == saved &&
+                            self.coordinator.pins.first(where: { $0.pin.id == pinnedID })?.pin
+                                .application == definition
+                        }
+                    }
+                }
             case .accessorySuccess(let pid):
                 notify(tr("Launch confirmed", "Запуск подтверждён"),
                        tr("Menu-bar app is running as PID \(pid); it is not shown as a taskbar button.", "Приложение строки меню работает как PID \(pid); оно не отображается кнопкой на панели."))
@@ -505,10 +542,11 @@ func tr(_ en: String, _ ru: String) -> String {
     }
     func contextMenu(_ capture: ButtonCapture) -> NSMenu {
         let menu = NSMenu()
-        func action(_ en: String, _ ru: String, _ command: String) {
+        func action(_ en: String, _ ru: String, _ command: String, enabled: Bool = true) {
             let item = NSMenuItem(title: tr(en, ru), action: #selector(menuAction(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = MenuCommand(capture: capture, action: command)
+            item.isEnabled = enabled
             menu.addItem(item)
         }
         func separator() { menu.addItem(.separator()) }
@@ -523,8 +561,14 @@ func tr(_ en: String, _ ru: String) -> String {
         }
         separator()
         if case .pin(let id) = capture.button {
+            let pin = coordinator.pins.first(where: { $0.pin.id == id })
+            action("Remember window position", "Запомнить положение окна", "rememberPlacement",
+                   enabled: capture.instance != nil)
+            action("Forget window position", "Забыть положение окна", "forgetPlacement",
+                   enabled: pin?.pin.savedWindowPlacement != nil)
+            separator()
             action("Unpin", "Открепить", "unpin")
-            if let pin = coordinator.pins.first(where: { $0.pin.id == id }), pin.availability == .missing {
+            if pin?.availability == .missing {
                 action("Application not found — choose replacement…", "Приложение не найдено — выбрать новый путь…", "relink")
             }
         } else if capture.application != nil { action("Pin", "Закрепить", "pin") }
@@ -548,6 +592,19 @@ func tr(_ en: String, _ ru: String) -> String {
                 moveButton(capture, to: command.action == "reorderLeft" ? index - 1 : index + 2)
             }
         case "relink": chooseReplacement(capture)
+        case "rememberPlacement":
+            guard let instance = capture.instance else { break }
+            Task {
+                guard valid(capture) else { return }
+                guard let saved = await windowPlacement.capture(for: instance), valid(capture) else {
+                    notify(tr("Cannot remember window position", "Не удалось запомнить положение окна"),
+                           tr("Select one focused standard window on a connected display and allow Accessibility access.",
+                              "Выберите одно сфокусированное обычное окно на подключённом экране и разрешите Универсальный доступ."))
+                    return
+                }
+                pinMutations.submit(.placement(capture, saved))
+            }
+        case "forgetPlacement": pinMutations.submit(.placement(capture, nil))
         case "switch": click(capture, new: false)
         case "new": click(capture, new: true)
         case "preview": previews.openExplicit(capture)
