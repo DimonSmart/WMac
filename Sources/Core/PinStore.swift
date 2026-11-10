@@ -33,7 +33,7 @@ struct PinLoad: Sendable { let pins: [ResolvedPin]; let layout: [TaskbarLayoutSl
 
 /// Synchronous filesystem calls execute exclusively on this actor, never the UI actor.
 actor PinStore {
-    static let currentVersion = 3
+    static let currentVersion = 4
     static var defaultURL: URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/WMac/pins.json")
     }
@@ -67,6 +67,9 @@ actor PinStore {
         let layout: [TaskbarLayoutSlot]
         switch version {
         case Self.currentVersion:
+            let document = try JSONDecoder().decode(Document.self, from: data)
+            pins = document.pins; layout = document.layout
+        case 3:
             let document = try JSONDecoder().decode(Document.self, from: data)
             pins = document.pins; layout = document.layout
         case 2:
@@ -103,7 +106,8 @@ actor PinStore {
     }
     private func validate(layout: [TaskbarLayoutSlot], pins: [Pin]) throws {
         let ids = pins.map(\.id)
-        guard Set(ids).count == ids.count, Set(pins.map(\.application)).count == pins.count,
+        guard pins.allSatisfy({ $0.savedWindowPlacement?.isValid ?? true }),
+              Set(ids).count == ids.count, Set(pins.map(\.application)).count == pins.count,
               Set(layout).count == layout.count else { throw PinStoreError.invalidState }
         var layoutPins: [UUID] = []
         var applicationIDs = Set<UUID>()
@@ -136,7 +140,8 @@ actor PinStore {
             } catch { note = "Invalid bookmark; relink application if original path is unavailable" }
         }
         let available = io.bundleID(target.url) == target.bundleID
-        return ResolvedPin(pin: Pin(id: original.id, application: target, name: original.name, bookmark: bookmark),
+        return ResolvedPin(pin: Pin(id: original.id, application: target, name: original.name, bookmark: bookmark,
+                                     savedWindowPlacement: original.savedWindowPlacement),
                            availability: available ? .available : .missing, recoveryNote: note)
     }
 }
@@ -145,7 +150,7 @@ actor PinStore {
 /// All asynchronous loads and edits form one FIFO. Nothing publishes until its atomic save succeeds.
 @MainActor final class PinMutations {
     enum Edit: Sendable {
-        case add(AppDefinition, String), pin(ButtonCapture), drop([URL]), remove(ButtonCapture), move(UUID, Int), reorder(ButtonCapture, Int), relink(ButtonCapture, URL), synchronizeLayout
+        case add(AppDefinition, String), pin(ButtonCapture), drop([URL]), remove(ButtonCapture), move(UUID, Int), reorder(ButtonCapture, Int), relink(ButtonCapture, URL), placement(ButtonCapture, SavedWindowPlacement?), synchronizeLayout
     }
     let coordinator: TaskbarCoordinator
     let store: PinStore
@@ -246,6 +251,15 @@ actor PinStore {
                         try await owner.store.save(owner.coordinator.pins.map(\.pin), layout: layout)
                         owner.lastSavedLayout = layout
                     }
+                case .placement(let capture, let placement):
+                    guard owner.valid(capture), case .pin(let id) = capture.button,
+                          let index = owner.coordinator.pins.firstIndex(where: { $0.pin.id == id }) else { return }
+                    guard placement?.isValid ?? true else { throw PinStoreError.invalidState }
+                    var pins = owner.coordinator.pins.map(\.pin)
+                    guard pins[index].savedWindowPlacement != placement else { return }
+                    pins[index] = pins[index].withPlacement(placement)
+                    try await owner.store.save(pins, layout: owner.coordinator.savedLayout)
+                    owner.coordinator.setSavedWindowPlacement(id, to: placement)
                 case .relink(let capture, let url):
                     guard owner.valid(capture), case .pin(let id) = capture.button,
                           let index = owner.coordinator.pins.firstIndex(where: { $0.pin.id == id }) else { return }
