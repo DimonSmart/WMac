@@ -20,7 +20,7 @@ struct WindowPlacementDisplay: Equatable, Sendable {
         return screens.compactMap { screen in
             guard let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
                   let displayUUID = CGDisplayCreateUUIDFromDisplayID(id),
-                  let uuid = UUID(uuidString: CFUUIDCreateString(nil, displayUUID) as String) else { return nil }
+                  let uuid = UUID(uuidString: CFUUIDCreateString(nil, displayUUID.takeRetainedValue()) as String) else { return nil }
             return Self(uuid: uuid, frame: ax(screen.frame), visible: ax(workArea(screen)))
         }
     }
