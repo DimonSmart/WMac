@@ -406,6 +406,7 @@ check(AccessibilityPermissionStatus(trusted: false).explanation.contains("Proces
 try await testApplicationCatalog(check)
 try await testCommandLineProcessIcon(check)
 try await testPinMutations(check)
+try await testWindowPlacement(check)
 try await testSettings(check)
 try testSystemDockRecovery(check)
 let primaryLayout = DisplayLayout(id: 1, frame: CGRect(x: 0, y: 0, width: 1440, height: 900))
