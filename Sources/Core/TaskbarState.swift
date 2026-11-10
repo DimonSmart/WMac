@@ -1,12 +1,30 @@
 import Foundation
 
+struct SavedWindowPlacement: Codable, Equatable, Sendable {
+    let displayUUID: UUID
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+
+    var isValid: Bool {
+        x.isFinite && y.isFinite && width.isFinite && height.isFinite && width > 0 && height > 0
+    }
+}
+
 struct Pin: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let application: AppDefinition
     let name: String
     let bookmark: Data?
-    init(id: UUID = UUID(), application: AppDefinition, name: String, bookmark: Data? = nil) {
+    let savedWindowPlacement: SavedWindowPlacement?
+    init(id: UUID = UUID(), application: AppDefinition, name: String, bookmark: Data? = nil,
+         savedWindowPlacement: SavedWindowPlacement? = nil) {
         self.id = id; self.application = application; self.name = name; self.bookmark = bookmark
+        self.savedWindowPlacement = savedWindowPlacement
+    }
+    func withPlacement(_ placement: SavedWindowPlacement?) -> Pin {
+        Pin(id: id, application: application, name: name, bookmark: bookmark, savedWindowPlacement: placement)
     }
 }
 enum PinAvailability: String, Sendable { case available, missing }
@@ -209,6 +227,13 @@ enum TaskbarPlacement: Hashable, Sendable {
         pins[index] = ResolvedPin(pin: Pin(id: id, application: pin.application, name: pin.name, bookmark: pin.bookmark),
                                   availability: replacement.availability, recoveryNote: replacement.recoveryNote)
         assignments[id] = nil; compose(); return true
+    }
+    func setSavedWindowPlacement(_ id: UUID, to placement: SavedWindowPlacement?) {
+        guard let index = pins.firstIndex(where: { $0.pin.id == id }) else { return }
+        let old = pins[index]
+        pins[index] = ResolvedPin(pin: old.pin.withPlacement(placement),
+                                  availability: old.availability, recoveryNote: old.recoveryNote)
+        compose()
     }
     func instance(for button: TaskbarButtonID) -> InstanceID? { snapshot.buttons.first { $0.id == button }?.instance?.id }
     private static func earlier(_ a: Instance, _ b: Instance) -> Bool {
