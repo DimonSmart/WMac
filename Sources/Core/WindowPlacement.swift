@@ -28,12 +28,25 @@ struct WindowPlacementDisplay: Equatable, Sendable {
 
 enum WindowPlacementGeometry {
     static func focusedNormalWindow(_ windows: [WindowReference]) -> WindowReference? {
-        let focused = windows.filter {
-            $0.isFocused && !$0.isMinimized && $0.frame != nil &&
-            $0.role == kAXWindowRole as String &&
-            ($0.subrole == nil || $0.subrole == kAXStandardWindowSubrole as String)
-        }
+        let focused = windows.filter { $0.isFocused && isNormalWindow($0) }
         return focused.count == 1 ? focused[0] : nil
+    }
+
+    static func restorableNormalWindow(_ windows: [WindowReference],
+                                       focusedWindowStatus: AXFocusedWindowStatus) -> WindowReference? {
+        let focused = windows.filter { $0.isFocused && isNormalWindow($0) }
+        if focused.count == 1 { return focused[0] }
+        guard focused.isEmpty,
+              !windows.contains(where: { $0.isFocused }),
+              focusedWindowStatus == .notReported else { return nil }
+        let normal = windows.filter(isNormalWindow)
+        return normal.count == 1 ? normal[0] : nil
+    }
+
+    private static func isNormalWindow(_ window: WindowReference) -> Bool {
+        !window.isMinimized && window.frame != nil &&
+        window.role == kAXWindowRole as String &&
+        (window.subrole == nil || window.subrole == kAXStandardWindowSubrole as String)
     }
 
     static func display(for uuid: UUID, in displays: [WindowPlacementDisplay]) -> WindowPlacementDisplay? {
@@ -127,12 +140,13 @@ final class WindowPlacementService {
                   WindowPlacementGeometry.display(for: placement.displayUUID, in: displays()) != nil else { return false }
             if case .windows(let candidates, let diagnostics) = await windows(instance),
                diagnostics.status == .complete,
-               let focused = WindowPlacementGeometry.focusedNormalWindow(candidates),
-               let current = focused.frame {
+               let candidate = WindowPlacementGeometry.restorableNormalWindow(
+                   candidates, focusedWindowStatus: diagnostics.focusedWindowStatus),
+               let current = candidate.frame {
                 if let first {
                     // Any change to window identity or geometry during settling
                     // is treated as user/application ownership; never override it.
-                    guard first.identity == focused.identity,
+                    guard first.identity == candidate.identity,
                           let original = first.frame,
                           WindowPlacementGeometry.sameFrame(original, current),
                           Date() < deadline,
@@ -140,9 +154,9 @@ final class WindowPlacementService {
                           let target = WindowPlacementGeometry.restored(placement, on: display),
                           live(instance), stillApplicable() else { return false }
                     if WindowPlacementGeometry.sameFrame(current, target) { return true }
-                    return await arrange(instance, focused.id, current, target)
+                    return await arrange(instance, candidate.id, current, target)
                 }
-                first = focused
+                first = candidate
                 try? await Task.sleep(for: .milliseconds(250))
                 continue
             }

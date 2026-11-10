@@ -101,6 +101,9 @@ struct AXElementDiagnostic: Equatable, Sendable {
 enum AXEnumerationStatus: String, Equatable, Sendable {
     case complete, empty, partial, unavailable
 }
+enum AXFocusedWindowStatus: Equatable, Sendable {
+    case reported, notReported, unavailable
+}
 struct AXEnumerationDiagnostics: Equatable, Sendable {
     let status: AXEnumerationStatus
     let listedElements: Int?
@@ -111,6 +114,24 @@ struct AXEnumerationDiagnostics: Equatable, Sendable {
     let failureReason: String?
     let failedAttribute: String?
     let axError: Int32?
+
+    let focusedWindowStatus: AXFocusedWindowStatus
+
+    init(status: AXEnumerationStatus, listedElements: Int?, inspectedElements: Int,
+         confirmedElements: Int, skippedElements: Int, issues: [AXElementDiagnostic],
+         failureReason: String?, failedAttribute: String?, axError: Int32?,
+         focusedWindowStatus: AXFocusedWindowStatus = .unavailable) {
+        self.status = status
+        self.listedElements = listedElements
+        self.inspectedElements = inspectedElements
+        self.confirmedElements = confirmedElements
+        self.skippedElements = skippedElements
+        self.issues = issues
+        self.failureReason = failureReason
+        self.failedAttribute = failedAttribute
+        self.axError = axError
+        self.focusedWindowStatus = focusedWindowStatus
+    }
 }
 struct AXWindowRead: Sendable {
     let windows: [AXWindowValue]
@@ -164,7 +185,15 @@ struct AccessibilityBoundary: Sendable {
             return .failure(AXFailure(message: "Window enumeration exceeds the 64-window safety budget; process switching remains available.", diagnostics: report))
         }
         var focused: CFTypeRef?
-        _ = AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &focused)
+        let focusedError = AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &focused)
+        let focusedWindowStatus: AXFocusedWindowStatus
+        if focusedError == .noValue {
+            focusedWindowStatus = .notReported
+        } else if focusedError == .success, focused != nil {
+            focusedWindowStatus = .reported
+        } else {
+            focusedWindowStatus = .unavailable
+        }
         let deadline = Date().addingTimeInterval(3)
         var windows: [AXWindowValue] = []
         var issues: [AXElementDiagnostic] = []
@@ -236,7 +265,8 @@ struct AccessibilityBoundary: Sendable {
         let report = AXEnumerationDiagnostics(status: status, listedElements: elements.count,
                                               inspectedElements: inspected, confirmedElements: windows.count,
                                               skippedElements: skipped, issues: issues, failureReason: nil,
-                                              failedAttribute: nil, axError: nil)
+                                              failedAttribute: nil, axError: nil,
+                                              focusedWindowStatus: focusedWindowStatus)
         return .success(AXWindowRead(windows: windows, diagnostics: report))
     }
     var perform: @Sendable (InstanceID, AXUIElement, WindowAction) -> String? = { id, element, action in
@@ -474,7 +504,8 @@ final class AccessibilityService: @unchecked Sendable {
                                                       skippedElements: read.diagnostics.skippedElements,
                                                       issues: read.diagnostics.issues,
                                                       failureReason: "Process exited during enumeration.",
-                                                      failedAttribute: nil, axError: nil)
+                                                      failedAttribute: nil, axError: nil,
+                                                      focusedWindowStatus: read.diagnostics.focusedWindowStatus)
                 return .unavailable("Process exited during enumeration.", report)
             }
             var state = states[id] ?? State()
