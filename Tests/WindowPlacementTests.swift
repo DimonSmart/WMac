@@ -47,12 +47,16 @@ import ApplicationServices
         id: UUID(), instance: instance, title: "Document", isMinimized: false, isFocused: true,
         canMinimize: true, frame: current, lifecycle: 5, role: kAXWindowRole as String,
         subrole: kAXStandardWindowSubrole as String)
-    var inactive = window
-    inactive.isFocused = false
+    let inactive = WindowReference(
+        id: UUID(), instance: instance, title: "Other", isMinimized: false, isFocused: false,
+        canMinimize: true, frame: current, lifecycle: 6, role: kAXWindowRole as String,
+        subrole: kAXStandardWindowSubrole as String)
     check(WindowPlacementGeometry.focusedNormalWindow([window, inactive])?.id == window.id,
           "one focused standard window wins even when the process owns several windows")
-    var otherFocused = window
-    otherFocused.id = UUID()
+    let otherFocused = WindowReference(
+        id: UUID(), instance: instance, title: "Other", isMinimized: false, isFocused: true,
+        canMinimize: true, frame: current, lifecycle: 6, role: kAXWindowRole as String,
+        subrole: kAXStandardWindowSubrole as String)
     check(WindowPlacementGeometry.focusedNormalWindow([window, otherFocused]) == nil,
           "two focused standard windows are ambiguous and cannot be saved")
     var dialog = window
@@ -104,9 +108,10 @@ import ApplicationServices
         displays: { [external] }, trusted: { false }, live: { _ in true },
         windows: { _ in attempts += 1; return .windows([window], diagnostics) },
         arrange: { _, _, _, _ in attempts += 1; return true })
-    check(await noPermission.capture(for: instance) == nil &&
-          !(await noPermission.restore(saved, for: instance, deadline: Date().addingTimeInterval(2))) &&
-          attempts == 0, "missing Accessibility permission never triggers a permission prompt or AX write")
+    let permissionCapture = await noPermission.capture(for: instance)
+    let permissionRestore = await noPermission.restore(saved, for: instance, deadline: Date().addingTimeInterval(2))
+    check(permissionCapture == nil && !permissionRestore && attempts == 0,
+          "missing Accessibility permission never triggers a permission prompt or AX write")
 
     var samples = 0
     var shifted = window
