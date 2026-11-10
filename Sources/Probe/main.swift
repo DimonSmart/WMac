@@ -58,7 +58,7 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
     if args.contains("--require-ax") && !ax.trusted { print("NOT VERIFIED: WMacProbe does not have Accessibility access. Grant the WMacProbe entry (or the responsible terminal shown by System Settings); WMac.app access is separate. No TCC changes made."); return 3 }
     func description(_ result: LaunchResult) -> String {
         switch result {
-        case .success(let instance): return "success PID \(instance.id.pid)"
+        case .success(let instance, _): return "success PID \(instance.id.pid)"
         case .accessorySuccess(let pid): return "accessory success PID \(pid)"
         case .error(let message): return "error: \(message)"
         case .unconfirmed(let message): return "unconfirmed: \(message)"
@@ -66,7 +66,7 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
     }
     func confirmed(_ result: LaunchResult, _ label: String) -> Instance? {
         switch result {
-        case .success(let instance): print("SUCCESS \(label) pid=\(instance.id.pid) start=\(instance.id.startDate)"); owned.append(instance); return instance
+        case .success(let instance, _): print("SUCCESS \(label) pid=\(instance.id.pid) start=\(instance.id.startDate)"); owned.append(instance); return instance
         case .accessorySuccess(let pid): print("ERROR \(label) expected taskbar instance, got menu-bar PID \(pid)"); return nil
         case .error(let message): print("ERROR \(label): \(message)"); return nil
         case .unconfirmed(let message): print("UNCONFIRMED \(label): \(message)"); return nil
@@ -74,7 +74,7 @@ func closeFocusedFixtureWindow(_ id: InstanceID) async -> Bool {
     }
     // Exercise the idle-pin callback as well as independent launch callbacks.
     guard let first = confirmed(await launcher.open(multi), "ordinary multi 1") else { check(false, "first ordinary GUI launch"); return 1 }
-    if case .success(let reopened) = await launcher.open(multi) {
+    if case .success(let reopened, _) = await launcher.open(multi) {
         check(reopened.id == first.id, "ordinary open reuses the existing GUI process")
     } else { check(false, "ordinary open confirms an existing GUI process") }
     // Concurrent requests have separate callbacks and baselines.
