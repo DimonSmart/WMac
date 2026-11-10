@@ -118,12 +118,12 @@ final class WindowPlacementService {
 
     @discardableResult
     func restore(_ placement: SavedWindowPlacement, for instance: InstanceID,
-                 deadline: Date) async -> Bool {
-        guard placement.isValid, trusted(), live(instance),
+                 deadline: Date, stillApplicable: () -> Bool = { true }) async -> Bool {
+        guard placement.isValid, trusted(), live(instance), stillApplicable(),
               WindowPlacementGeometry.display(for: placement.displayUUID, in: displays()) != nil else { return false }
         var first: WindowReference?
         while !Task.isCancelled && Date() < deadline {
-            guard trusted(), live(instance),
+            guard trusted(), live(instance), stillApplicable(),
                   WindowPlacementGeometry.display(for: placement.displayUUID, in: displays()) != nil else { return false }
             if case .windows(let candidates, let diagnostics) = await windows(instance),
                diagnostics.status == .complete,
@@ -138,7 +138,7 @@ final class WindowPlacementService {
                           Date() < deadline,
                           let display = WindowPlacementGeometry.display(for: placement.displayUUID, in: displays()),
                           let target = WindowPlacementGeometry.restored(placement, on: display),
-                          live(instance) else { return false }
+                          live(instance), stillApplicable() else { return false }
                     if WindowPlacementGeometry.sameFrame(current, target) { return true }
                     return await arrange(instance, focused.id, current, target)
                 }
