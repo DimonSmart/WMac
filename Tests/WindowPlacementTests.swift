@@ -71,25 +71,31 @@ import ApplicationServices
     var reads = 0
     var writes = 0
     var lastTarget: CGRect?
+    var currentFrame = current
+    var connected = [primary, external]
     let service = WindowPlacementService(
-        displays: { [primary, external] }, trusted: { true },
+        displays: { connected }, trusted: { true },
         live: { $0 == instance },
         windows: { id in
             reads += 1
             check(id == instance, "window enumeration stays within the confirmed process lifetime")
-            return .windows([window], diagnostics)
+            var observed = window
+            observed.frame = currentFrame
+            return .windows([observed], diagnostics)
         },
         arrange: { id, windowID, expected, target in
             writes += 1
             check(id == instance && windowID == window.id && expected == current,
                   "conditional AX mutation targets the same window and its observed frame")
             lastTarget = target
+            currentFrame = target
             return true
         })
     check(await service.capture(for: instance) == saved,
           "remember uses the unique focused window and stable monitor UUID")
+    connected = [primary, reconnected]
     check(await service.restore(saved, for: instance, deadline: Date().addingTimeInterval(2)) &&
-          writes == 1 && lastTarget == current,
+          writes == 1 && lastTarget == CGRect(x: 1780, y: -140, width: 880, height: 620),
           "one confirmed process has at most one conditional restore attempt")
     // Same-frame restoration is a no-op, not an additional window mutation.
     check(await service.restore(saved, for: instance, deadline: Date().addingTimeInterval(2)) && writes == 1,
