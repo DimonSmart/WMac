@@ -24,16 +24,18 @@ import AppKit
     let remembered = SavedWindowPlacement(displayUUID: UUID(), x: 123, y: 45, width: 800, height: 600)
     let positionCapture = ButtonCapture(state.snapshot.buttons[0])
     operations.submit(.placement(positionCapture, remembered)); await operations.wait()
+    let rememberedDisk = try await store.load()
     check(state.pins[0].pin.savedWindowPlacement == remembered &&
-          (try await store.load()).pins[0].pin.savedWindowPlacement == remembered,
+          rememberedDisk.pins[0].pin.savedWindowPlacement == remembered,
           "remember commits the new geometry into the pin and the atomic v4 file")
     let replacement = SavedWindowPlacement(displayUUID: UUID(), x: -100, y: 20, width: 600, height: 420)
     operations.submit(.placement(positionCapture, replacement)); await operations.wait()
     check((try await store.load()).pins[0].pin.savedWindowPlacement == replacement,
           "remembering again replaces the previous monitor and geometry")
     operations.submit(.placement(positionCapture, nil)); await operations.wait()
+    let forgottenDisk = try await store.load()
     check(state.pins[0].pin.savedWindowPlacement == nil &&
-          (try await store.load()).pins[0].pin.savedWindowPlacement == nil,
+          forgottenDisk.pins[0].pin.savedWindowPlacement == nil,
           "forget clears saved position without changing pin identity or order")
     let captured = ButtonCapture(state.snapshot.buttons[0])
     state.relink(id, to: ResolvedPin(pin: Pin(application: a, name: "A"), availability: .available, recoveryNote: nil)) // duplicate rejected
@@ -197,8 +199,9 @@ import AppKit
           v3Load.layout == [.pin(oldPin.id)],
           "v3 layout and pin identity migrate to v4 without an invented window position")
     let v3JSON = try Data(contentsOf: v3URL)
+    let v3Again = try await v3Store.load()
     check(try JSONDecoder().decode(LegacyV3.self, from: v3JSON).version == 4 &&
-          !(try await v3Store.load()).migrated,
+          !v3Again.migrated,
           "v3 migration commits schema v4 atomically and is idempotent")
     let invalid = Pin(id: oldPin.id, application: a, name: "Bad",
                       savedWindowPlacement: SavedWindowPlacement(displayUUID: UUID(), x: 0, y: 0, width: 0, height: 120))
